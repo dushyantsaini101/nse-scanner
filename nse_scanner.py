@@ -1,32 +1,28 @@
 #!/usr/bin/env python3
 """
-NSE Stock Scanner  —  all NSE-listed stocks (Mainboard + SME)
--------------------------------------------------------------
-Downloads NSE's official end-of-day bhavcopy files and index constituent
-lists, then builds an interactive scanner page (scanner.html) with:
+Indian Stock Scanner — NSE + BSE (Mainboard and SME)
+----------------------------------------------------
+Downloads the official end-of-day bhavcopy files from NSE and BSE for the last
+~1 year, plus NSE index constituent lists, and builds an interactive scanner
+page with:
 
-  * Price change for 1 Day / 1 Week / 1 Month / 3 Months / 6 Months / 1 Year
-  * Sort by any column (click the header), gainers / losers
-  * Universe filter: All, Mainboard, SME, and Nifty indices
-    (Nifty 50, Next 50, 100, 200, 500, Midcap 150, Smallcap 250,
-     Microcap 250, Bank, IT, Pharma, Auto, FMCG, Metal, Realty, Energy …)
-  * Sector filter, symbol search, min price / min traded value filters
-  * Export the current view to CSV
+  * % change for 1 Day / 1 Week / 1 Month / 3 Months / 6 Months / 1 Year
+    (prices adjusted for splits and bonuses)
+  * Universe: NSE Mainboard, NSE SME, BSE SME, BSE-only stocks, Nifty indices
+  * Setups: Darvas box breakout, in Darvas box near top, new 52-week high,
+    near 52-week high, volume spike, IPO base breakout
+  * Sort by any column, sector / price / value / volume filters, CSV export
 
 Usage:
     pip install requests
-    python nse_scanner.py            # uses the latest available trading day
-    python nse_scanner.py 2026-10-21 # scan as of a specific date
+    python nse_scanner.py            # latest available trading day
+    python nse_scanner.py 2026-10-21 # as of a specific date
 
-Run after ~7 PM IST on a trading day (NSE publishes the bhavcopy after close).
-Downloads are cached in ./nse_cache so re-runs are fast.
-
-Note: returns are based on raw closing prices (not adjusted for splits/bonuses).
-A stock that split or issued a bonus in the period will show a false big fall —
-these are flagged with a ⚠ in the scanner when the move looks like a corporate action.
+The first run downloads ~1 year of files (5-10 minutes); later runs only fetch
+the new day. Downloads are cached in ./nse_cache.
 """
 
-import csv, io, json, os, sys, time, zipfile, webbrowser
+import bisect, csv, gzip, io, json, os, sys, time, zipfile, webbrowser
 from datetime import date, datetime, timedelta
 
 try:
@@ -38,21 +34,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.environ.get("NSE_CACHE") or os.path.join(HERE, "nse_cache")
 OUT_DIR = os.environ.get("OUT_DIR")          # set by the GitHub workflow
 OUT = os.path.join(OUT_DIR, "index.html") if OUT_DIR else os.path.join(HERE, "scanner.html")
+DATA_DIR = os.path.join(HERE, "data") if OUT_DIR else HERE
 IN_CI = bool(os.environ.get("CI"))
 os.makedirs(CACHE, exist_ok=True)
 if OUT_DIR:
     os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Accept": "*/*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/",
-}
+HISTORY_DAYS = 375                 # calendar days of history to keep
+NSE_MAIN = {"EQ", "BE", "BZ"}
+NSE_SME = {"SM", "ST"}
+BSE_SME = {"M", "MT", "MS"}
 
-MAINBOARD_SERIES = {"EQ", "BE", "BZ"}
-SME_SERIES = {"SM", "ST"}
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+NSE_HEADERS = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
+               "Referer": "https://www.nseindia.com/"}
+BSE_HEADERS = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "en-US,en;q=0.9",
+               "Referer": "https://www.bseindia.com/", "Origin": "https://www.bseindia.com"}
 
 PERIODS = [  # key, label, calendar days back
     ("1D", "1 Day", None),
@@ -92,66 +91,94 @@ INDICES = [  # label, NSE file name
 ]
 
 session = requests.Session()
-session.headers.update(HEADERS)
-_primed = False
+session.headers.update(NSE_HEADERS)
+_primed = set()
 
 
-def prime_cookies():
-    global _primed
-    if not _primed:
+def prime_cookies(home):
+    if home not in _primed:
         try:
-            session.get("https://www.nseindia.com/", timeout=15)
+            session.get(home, timeout=15)
         except Exception:
             pass
-        _primed = True
+        _primed.add(home)
 
 
-def fetch(url, tries=3):
-    """GET with retries. Returns bytes, or None on 404/missing."""
+def fetch(url, headers=None, tries=3):
+    """GET with retries. Returns (bytes or None, status) — status: ok / missing / error."""
     for i in range(tries):
         try:
-            r = session.get(url, timeout=30)
+            r = session.get(url, timeout=30, headers=headers)
             if r.status_code == 200 and r.content:
-                return r.content
+                return r.content, "ok"
             if r.status_code == 404:
-                return None
+                return None, "missing"
             if r.status_code in (401, 403):
-                prime_cookies()
+                prime_cookies("https://www.bseindia.com/" if "bseindia" in url
+                              else "https://www.nseindia.com/")
         except requests.RequestException:
             pass
         time.sleep(1.5 * (i + 1))
-    return None
+    return None, "error"
 
 
-# ---------------------------------------------------------------- bhavcopy
+# ---------------------------------------------------------------- bhavcopies
 
-def bhav_url(d):
+def nse_url(d):
     return ("https://nsearchives.nseindia.com/content/cm/"
             f"BhavCopy_NSE_CM_0_0_0_{d:%Y%m%d}_F_0000.csv.zip")
 
 
-def load_bhavcopy(d):
-    """Return {symbol: row-dict} for date d, or None if no trading that day."""
-    cache_file = os.path.join(CACHE, f"bhav_{d:%Y%m%d}.csv")
-    missing_marker = cache_file + ".missing"
-    if os.path.exists(cache_file):
-        with open(cache_file, "rb") as f:
-            raw = f.read()
-    elif os.path.exists(missing_marker) and d < date.today():
+def bse_url(d):
+    return ("https://www.bseindia.com/download/BhavCopy/Equity/"
+            f"BhavCopy_BSE_CM_0_0_0_{d:%Y%m%d}_F_0000.CSV")
+
+
+last_status = {}
+
+
+def get_raw(ex, d):
+    """Return the raw CSV bytes of exchange `ex` ('nse'/'bse') for date d, or None."""
+    gz = os.path.join(CACHE, f"{ex}_{d:%Y%m%d}.csv.gz")
+    miss = os.path.join(CACHE, f"{ex}_{d:%Y%m%d}.missing")
+    if os.path.exists(gz):
+        with gzip.open(gz, "rb") as f:
+            return f.read()
+    if ex == "nse":  # files cached by the earlier version of this script
+        legacy = os.path.join(CACHE, f"bhav_{d:%Y%m%d}.csv")
+        if os.path.exists(legacy):
+            with open(legacy, "rb") as f:
+                return f.read()
+        if os.path.exists(legacy + ".missing") and d < date.today():
+            return None
+    if os.path.exists(miss) and d < date.today():
         return None
+    if d.weekday() >= 5:
+        return None
+
+    if ex == "nse":
+        blob, st = fetch(nse_url(d))
+        raw = None
+        if blob:
+            try:
+                with zipfile.ZipFile(io.BytesIO(blob)) as z:
+                    raw = z.read(z.namelist()[0])
+            except zipfile.BadZipFile:
+                st = "error"
     else:
-        if d.weekday() >= 5:
-            return None
-        blob = fetch(bhav_url(d))
-        if not blob:
-            if d < date.today():
-                open(missing_marker, "w").close()
-            return None
-        with zipfile.ZipFile(io.BytesIO(blob)) as z:
-            raw = z.read(z.namelist()[0])
-        with open(cache_file, "wb") as f:
+        blob, st = fetch(bse_url(d), headers=BSE_HEADERS)
+        raw = blob
+        if blob and (b"TradDt" not in blob[:300] or b"<html" in blob[:300].lower()):
+            raw, st = None, "error"   # an error page, not the file
+    time.sleep(0.25)
+    last_status[ex] = st
+    if raw:
+        with gzip.open(gz, "wb") as f:
             f.write(raw)
-    return parse_bhavcopy(raw)
+        return raw
+    if st == "missing" and d < date.today():
+        open(miss, "w").close()
+    return None
 
 
 def num(x):
@@ -161,44 +188,34 @@ def num(x):
         return None
 
 
-def parse_bhavcopy(raw):
-    text = raw.decode("utf-8", errors="ignore")
+def parse(raw, ex):
+    """Return {key: row} for equity rows. NSE keys are symbols, BSE keys are 'B:<scrip code>'."""
+    text = raw.decode("utf-8-sig", errors="ignore")
     rows = {}
     for r in csv.DictReader(io.StringIO(text)):
-        r = {k.strip(): (v or "").strip() for k, v in r.items() if k}
+        r = {(k or "").strip(): (v or "").strip() for k, v in r.items() if k}
         series = r.get("SctySrs", "")
-        if series not in MAINBOARD_SERIES and series not in SME_SERIES:
-            continue
-        sym = r.get("TckrSymb")
+        isin = r.get("ISIN", "")
+        if ex == "nse":
+            if series not in NSE_MAIN and series not in NSE_SME:
+                continue
+            key = sym = r.get("TckrSymb", "")
+        else:
+            if r.get("FinInstrmTp", "STK") not in ("STK", "") or not isin.startswith("INE"):
+                continue
+            code = r.get("FinInstrmId", "") or r.get("TckrSymb", "")
+            key, sym = "B:" + code, r.get("TckrSymb", "") or code
         close = num(r.get("ClsPric"))
-        if not sym or not close:
+        if not key or not close:
             continue
-        rows[sym] = {
-            "name": r.get("FinInstrmNm", ""),
-            "series": series,
-            "isin": r.get("ISIN", ""),
-            "open": num(r.get("OpnPric")),
-            "high": num(r.get("HghPric")),
-            "low": num(r.get("LwPric")),
-            "close": close,
-            "prev": num(r.get("PrvsClsgPric")),
-            "vol": num(r.get("TtlTradgVol")) or 0,
-            "val": num(r.get("TtlTrfVal")) or 0,
+        rows[key] = {
+            "sym": sym, "code": r.get("FinInstrmId", ""), "name": r.get("FinInstrmNm", ""),
+            "series": series, "isin": isin,
+            "o": num(r.get("OpnPric")) or close, "h": num(r.get("HghPric")) or close,
+            "l": num(r.get("LwPric")) or close, "c": close, "prev": num(r.get("PrvsClsgPric")),
+            "vol": num(r.get("TtlTradgVol")) or 0, "val": num(r.get("TtlTrfVal")) or 0,
         }
     return rows
-
-
-def nearest_trading_day(target, max_back=10, label=""):
-    """Walk back from target until a bhavcopy exists."""
-    d = target
-    for _ in range(max_back):
-        data = load_bhavcopy(d)
-        if data:
-            print(f"  {label:<9} {d:%d %b %Y}  ({len(data):,} stocks)")
-            return d, data
-        d -= timedelta(days=1)
-    print(f"  {label:<9} not found near {target:%d %b %Y}")
-    return None, None
 
 
 # ---------------------------------------------------------------- indices
@@ -210,26 +227,330 @@ def load_index(fname):
         with open(cache_file, "rb") as f:
             raw = f.read()
     else:
-        raw = (fetch(f"https://nsearchives.nseindia.com/content/indices/{fname}")
-               or fetch(f"https://www.niftyindices.com/IndexConstituent/{fname}"))
+        raw = (fetch(f"https://nsearchives.nseindia.com/content/indices/{fname}")[0]
+               or fetch(f"https://www.niftyindices.com/IndexConstituent/{fname}")[0])
         if not raw:
-            if os.path.exists(cache_file):  # fall back to stale cache
-                with open(cache_file, "rb") as f:
-                    raw = f.read()
-            else:
+            if not os.path.exists(cache_file):
                 return None
+            with open(cache_file, "rb") as f:
+                raw = f.read()
         else:
             with open(cache_file, "wb") as f:
                 f.write(raw)
     out = {}
-    for r in csv.DictReader(io.StringIO(raw.decode("utf-8", errors="ignore"))):
-        r = {k.strip(): (v or "").strip() for k, v in r.items() if k}
+    for r in csv.DictReader(io.StringIO(raw.decode("utf-8-sig", errors="ignore"))):
+        r = {(k or "").strip(): (v or "").strip() for k, v in r.items() if k}
         if r.get("Symbol"):
             out[r["Symbol"]] = r.get("Industry", "")
     return out
 
 
+# ---------------------------------------------------------------- analytics
+
+def build_series(days, keys):
+    """days: [(date, rows)] ascending. Returns {key: [[date,o,h,l,c,prev,vol], ...]}."""
+    ser = {k: [] for k in keys}
+    for d, rows in days:
+        for k in keys:
+            r = rows.get(k)
+            if r:
+                ser[k].append([d, r["o"], r["h"], r["l"], r["c"], r["prev"], r["vol"]])
+    return ser
+
+
+def adjust(recs):
+    """Adjust earlier prices for splits/bonuses using the exchange's adjusted previous close."""
+    n = len(recs)
+    factors = [1.0] * n
+    events = 0
+    for j in range(1, n):
+        prev, last = recs[j][5], recs[j - 1][4]
+        if prev and last:
+            f = prev / last
+            if abs(f - 1) > 0.005 and 0.01 < f < 100:
+                factors[j] = f
+                events += 1
+    mult = 1.0
+    for j in range(n - 1, -1, -1):
+        if mult != 1.0:
+            r = recs[j]
+            r[1] *= mult; r[2] *= mult; r[3] *= mult; r[4] *= mult; r[6] /= mult
+        mult *= factors[j]
+    return events
+
+
+def darvas(H, L, C):
+    """Classic Darvas box: a top holds for 3 days, then a bottom holds for 3 days.
+    Returns (status, top, bottom, sessions_since_box) — status: bo / box / form."""
+    n = len(H)
+    if n < 8:
+        return None
+    state, top, top_i, cnt = 0, H[0], 0, 0
+    bot = bcnt = 0
+    box_t = box_b = box_i = None
+    bo_box = None
+    for i in range(1, n):
+        h, l, c = H[i], L[i], C[i]
+        if state == 2:
+            if c > box_t:
+                if i == n - 1:
+                    bo_box = (box_t, box_b, i - box_i)
+                state, top, top_i, cnt = 0, h, i, 0
+            elif c < box_b:
+                state, top, top_i, cnt = 0, h, i, 0
+            continue
+        if state == 0:
+            if h > top:
+                top, top_i, cnt = h, i, 0
+            else:
+                cnt += 1
+                if cnt >= 3:
+                    seg = L[top_i + 1:i + 1]
+                    bot = min(seg)
+                    bcnt = i - (top_i + 1 + seg.index(bot))
+                    state = 1
+                    if bcnt >= 3:
+                        state, box_t, box_b, box_i = 2, top, bot, i
+            continue
+        if state == 1:
+            if h > top:
+                state, top, top_i, cnt = 0, h, i, 0
+                continue
+            if l < bot:
+                bot, bcnt = l, 0
+            else:
+                bcnt += 1
+            if bcnt >= 3:
+                state, box_t, box_b, box_i = 2, top, bot, i
+    if bo_box:
+        return ("bo",) + bo_box
+    if state == 2:
+        return ("box", box_t, box_b, n - 1 - box_i)
+    return ("form", None, None, None)
+
+
+def r2(x):
+    return None if x is None else round(x, 2)
+
+
+def analyse(recs, latest_day, first_session, periods):
+    """Compute changes and setups from one stock's adjusted daily records (last = today)."""
+    dates = [r[0] for r in recs]
+    today = recs[-1]
+    c = today[4]
+    out = {"ch": {}}
+    out["ch"]["1D"] = r2((c / today[5] - 1) * 100) if today[5] else None
+    for key, _, days in periods:
+        if not days:
+            continue
+        target = latest_day - timedelta(days=days)
+        i = bisect.bisect_right(dates, target) - 1
+        if i >= 0 and dates[0] <= target and recs[i][4]:
+            out["ch"][key] = r2((c / recs[i][4] - 1) * 100)
+        else:
+            out["ch"][key] = None
+
+    # 52-week high
+    start52 = latest_day - timedelta(days=365)
+    j52 = bisect.bisect_left(dates, start52)
+    highs = [r[2] for r in recs[j52:]]
+    h52 = max(highs)
+    prior_high = max(highs[:-1]) if len(highs) > 1 else None
+    full_year = dates[0] <= start52 + timedelta(days=10)
+    out["h52"] = r2(h52)
+    out["f52"] = r2((c / h52 - 1) * 100) if h52 else None
+    out["nh"] = bool(full_year and prior_high and today[2] > prior_high)
+
+    # volume vs 50-session average
+    vols = [r[6] for r in recs[-51:-1] if r[6]]
+    out["vx"] = r2(today[6] / (sum(vols) / len(vols))) if len(vols) >= 10 and today[6] else None
+
+    # Darvas box on the last year of sessions
+    sl = recs[j52:]
+    dv = darvas([r[2] for r in sl], [r[3] for r in sl], [r[4] for r in sl])
+    out["dv"] = ({"st": dv[0], "t": r2(dv[1]), "b": r2(dv[2]), "d": dv[3]}
+                 if dv and dv[0] != "form" else ({"st": "form"} if dv else None))
+
+    # recent listing (appeared after the start of history and trades regularly)
+    out["ipo"] = None
+    out["ib"] = False
+    if dates[0] > first_session + timedelta(days=7):
+        age = len(recs)
+        out["ipo"] = age
+        if age >= 10 and prior_high is not None and c > max(r[2] for r in recs[:-1]):
+            out["ib"] = True
+    return out
+
+
 # ---------------------------------------------------------------- main
+
+def main():
+    as_of = (datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
+             if len(sys.argv) > 1 else date.today())
+
+    # ---- NSE: latest day + 1 year of history
+    print("NSE: finding latest trading day…")
+    latest_day, latest_raw = None, None
+    for k in range(10):
+        d = as_of - timedelta(days=k)
+        latest_raw = get_raw("nse", d)
+        if latest_raw:
+            latest_day = d
+            break
+    if not latest_day:
+        sys.exit("Could not download the latest NSE bhavcopy. Check your internet, "
+                 "or run after 7 PM IST on a trading day.")
+    print(f"  latest: {latest_day:%d %b %Y}")
+
+    print(f"NSE: loading {HISTORY_DAYS} days of history (first run takes a few minutes)…")
+    nse_days = []
+    d = latest_day
+    start = latest_day - timedelta(days=HISTORY_DAYS)
+    n_checked = 0
+    while d >= start:
+        if d.weekday() < 5:
+            raw = latest_raw if d == latest_day else get_raw("nse", d)
+            if raw:
+                nse_days.append((d, parse(raw, "nse")))
+            n_checked += 1
+            if n_checked % 50 == 0:
+                print(f"  …{n_checked} weekdays checked, {len(nse_days)} sessions")
+        d -= timedelta(days=1)
+    nse_days.reverse()
+    sessions = [d for d, _ in nse_days]
+    latest = nse_days[-1][1]
+    print(f"  {len(sessions)} sessions from {sessions[0]:%d %b %Y}")
+
+    # ---- BSE: only stocks not listed on NSE
+    print("BSE: loading…")
+    nse_isins = {r["isin"] for r in latest.values() if r["isin"]}
+    bse_days, bse_status, bse_series = [], "", {}
+    raw = get_raw("bse", latest_day)
+    if not raw:
+        bse_status = f"unavailable ({last_status.get('bse', 'not found')})"
+        print(f"  BSE file for {latest_day:%d %b %Y} {bse_status} — continuing with NSE only")
+    else:
+        today_bse = parse(raw, "bse")
+        for r in today_bse.values():
+            bse_series[r["series"]] = bse_series.get(r["series"], 0) + 1
+        bse_only = {k: r for k, r in today_bse.items() if r["isin"] not in nse_isins}
+        errors = 0
+        for d in sessions[:-1]:
+            raw_d = get_raw("bse", d)
+            if raw_d:
+                rows = parse(raw_d, "bse")
+                bse_days.append((d, {k: rows[k] for k in bse_only if k in rows}))
+                errors = 0
+            elif last_status.get("bse") == "error":
+                errors += 1
+                if errors >= 8:
+                    print("  BSE stopped responding — using the history fetched so far")
+                    break
+        bse_days.append((latest_day, bse_only))
+        bse_days.sort(key=lambda x: x[0])
+        bse_status = f"ok ({len(bse_only)} BSE-only stocks, {len(bse_days)} sessions)"
+        print(f"  {bse_status}")
+
+    # ---- indices
+    print("Index lists…")
+    index_members, sector = {}, {}
+    for label, fname in INDICES:
+        m = load_index(fname)
+        if m:
+            index_members[label] = sorted(m.keys())
+            for s, ind in m.items():
+                if ind and s not in sector:
+                    sector[s] = ind
+    print(f"  {len(index_members)} indices")
+
+    # ---- analytics
+    print("Calculating…")
+    stocks, adj_events = [], 0
+    groups = [("nse", nse_days, latest)]
+    if bse_days:
+        groups.append(("bse", bse_days, bse_days[-1][1]))
+    for ex, days, today_rows in groups:
+        ser = build_series(days, list(today_rows.keys()))
+        for key, recs in ser.items():
+            if not recs or recs[-1][0] != latest_day:
+                continue
+            adj_events += adjust(recs)
+            r = today_rows[key]
+            a = analyse(recs, latest_day, sessions[0], PERIODS)
+            if ex == "nse":
+                seg = "NSE SME" if r["series"] in NSE_SME else "NSE"
+            else:
+                seg = "BSE SME" if r["series"] in BSE_SME else "BSE"
+            stocks.append({
+                "s": r["sym"], "n": r["name"], "seg": seg, "sr": r["series"],
+                "x": "B" if ex == "bse" else "N", "code": r["code"] if ex == "bse" else "",
+                "sec": sector.get(r["sym"], "") if ex == "nse" else "",
+                "c": r["c"], "v": int(r["vol"]), "tv": round(r["val"] / 1e7, 2),
+                **a,
+            })
+
+    counts = {}
+    for s in stocks:
+        counts[s["seg"]] = counts.get(s["seg"], 0) + 1
+    meta = {
+        "asOf": latest_day.strftime("%d %b %Y"),
+        "generated": datetime.now().strftime("%d %b %Y, %I:%M %p"),
+        "periodDates": {k: (latest_day - timedelta(days=dd)).strftime("%d %b %Y")
+                        for k, _, dd in PERIODS if dd},
+        "periods": [[k, l] for k, l, _ in PERIODS],
+        "counts": counts,
+        "sessions": len(sessions),
+        "historyFrom": sessions[0].strftime("%d %b %Y"),
+        "bse": bse_status,
+        "bseSeries": bse_series,
+        "adjustments": adj_events,
+    }
+
+    html = TEMPLATE.replace("/*__DATA__*/", json.dumps(
+        {"meta": meta, "stocks": stocks, "indices": index_members},
+        separators=(",", ":")))
+    with open(OUT, "w", encoding="utf-8") as f:
+        f.write(html)
+    write_app_files(os.path.dirname(OUT))
+    write_csv(stocks, index_members, meta)
+
+    print(f"\nDone: {len(stocks):,} stocks as of {meta['asOf']}  {counts}")
+    print(f"BSE: {bse_status}")
+    print(f"Scanner saved to {OUT}")
+    if not IN_CI:
+        try:
+            webbrowser.open("file://" + OUT)
+        except Exception:
+            pass
+
+
+def write_csv(stocks, index_members, meta):
+    """Full data file that Claude reads (data/scan_full.csv in the repository)."""
+    idx = {}
+    for name, syms in index_members.items():
+        for s in syms:
+            idx.setdefault(s, []).append(name)
+    periods = [p[0] for p in meta["periods"]]
+    path = os.path.join(DATA_DIR, "scan_full.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Symbol", "Exchange", "BSE_Code", "Name", "Segment", "Series", "Sector", "Close"]
+                   + ["Chg_" + p for p in periods]
+                   + ["High_52W", "From_52WH_pct", "New_52W_High", "Vol_x_50d",
+                      "Darvas_Status", "Box_Top", "Box_Bottom", "Box_Sessions",
+                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices"])
+        for s in stocks:
+            dv = s.get("dv") or {}
+            w.writerow([s["s"], "BSE" if s["x"] == "B" else "NSE", s["code"], s["n"], s["seg"],
+                        s["sr"], s["sec"], s["c"]]
+                       + [s["ch"].get(p, "") for p in periods]
+                       + [s["h52"], s["f52"], s["nh"], s["vx"],
+                          dv.get("st", ""), dv.get("t", ""), dv.get("b", ""), dv.get("d", ""),
+                          s["ipo"] or "", s["ib"], s["v"], s["tv"],
+                          "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else ""])
+    with open(os.path.join(DATA_DIR, "meta_full.json"), "w") as f:
+        json.dump(meta, f, indent=1)
+
 
 # ---------------------------------------------------------------- app files
 
@@ -251,92 +572,10 @@ def write_app_files(folder):
             f.write(_b64.b64decode(data))
 
 
-def main():
-    if len(sys.argv) > 1:
-        as_of = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
-    else:
-        as_of = date.today()
-
-    print("Downloading NSE bhavcopies…")
-    latest_day, latest = nearest_trading_day(as_of, label="Latest")
-    if not latest:
-        sys.exit("Could not download the latest bhavcopy. Check your internet, "
-                 "or run after 7 PM IST on a trading day.")
-
-    history = {}
-    for key, _, days in PERIODS:
-        if days:
-            d, data = nearest_trading_day(latest_day - timedelta(days=days), label=key)
-            history[key] = (d, data or {})
-
-    print("Downloading index constituent lists…")
-    index_members = {}
-    sector = {}
-    for label, fname in INDICES:
-        m = load_index(fname)
-        if m:
-            index_members[label] = sorted(m.keys())
-            for s, ind in m.items():
-                if ind and s not in sector:
-                    sector[s] = ind
-            print(f"  {label:<26} {len(m):>4}")
-        else:
-            print(f"  {label:<26}  (unavailable — skipped)")
-
-    def pct(a, b):
-        return round((a / b - 1) * 100, 2) if a and b else None
-
-    stocks = []
-    for sym, r in latest.items():
-        c = r["close"]
-        rec = {
-            "s": sym,
-            "n": r["name"],
-            "seg": "SME" if r["series"] in SME_SERIES else "Main",
-            "sr": r["series"],
-            "sec": sector.get(sym, ""),
-            "c": c,
-            "v": int(r["vol"]),
-            "tv": round(r["val"] / 1e7, 2),  # ₹ crore
-            "ch": {"1D": pct(c, r["prev"])},
-        }
-        for key, (_, data) in history.items():
-            old = data.get(sym)
-            rec["ch"][key] = pct(c, old["close"]) if old else None
-        stocks.append(rec)
-
-    meta = {
-        "asOf": latest_day.strftime("%d %b %Y"),
-        "generated": datetime.now().strftime("%d %b %Y, %I:%M %p"),
-        "periodDates": {k: (d.strftime("%d %b %Y") if d else None) for k, (d, _) in history.items()},
-        "periods": [[k, l] for k, l, _ in PERIODS],
-        "counts": {
-            "Main": sum(1 for s in stocks if s["seg"] == "Main"),
-            "SME": sum(1 for s in stocks if s["seg"] == "SME"),
-        },
-    }
-
-    html = TEMPLATE.replace("/*__DATA__*/", json.dumps(
-        {"meta": meta, "stocks": stocks, "indices": index_members},
-        separators=(",", ":")))
-    with open(OUT, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    print(f"\nDone: {len(stocks):,} stocks  ({meta['counts']['Main']:,} Mainboard, "
-          f"{meta['counts']['SME']:,} SME) as of {meta['asOf']}")
-    write_app_files(os.path.dirname(OUT))
-    print(f"Scanner saved to {OUT}")
-    if not IN_CI:
-        try:
-            webbrowser.open("file://" + OUT)
-        except Exception:
-            pass
-
-
 TEMPLATE = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NSE Stock Scanner</title>
+<title>Stock Scanner</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1f4fd8">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -346,9 +585,9 @@ TEMPLATE = r"""<!doctype html>
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
 :root{--bg:#f6f7f9;--card:#fff;--ink:#14171c;--mute:#6b7280;--line:#e5e7eb;
---up:#0a8a4a;--upbg:#e7f6ee;--dn:#c62828;--dnbg:#fdecec;--acc:#1f4fd8;--accbg:#e8eefc}
+--up:#0a8a4a;--upbg:#e7f6ee;--dn:#c62828;--dnbg:#fdecec;--acc:#1f4fd8;--accbg:#e8eefc;--amb:#a15c00;--ambbg:#fff4e0}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--ink:#e8eaed;--mute:#9aa0a6;
---line:#2a2f3a;--up:#3ecf7f;--upbg:#12301f;--dn:#ff6b6b;--dnbg:#3a1717;--acc:#7aa2ff;--accbg:#1c2640}}
+--line:#2a2f3a;--up:#3ecf7f;--upbg:#12301f;--dn:#ff6b6b;--dnbg:#3a1717;--acc:#7aa2ff;--accbg:#1c2640;--amb:#ffb84d;--ambbg:#3a2a10}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 header{padding:16px;max-width:1200px;margin:auto}
@@ -356,19 +595,23 @@ h1{font-size:20px;margin:0 0 4px}
 .sub{color:var(--mute);font-size:12px}
 .wrap{max-width:1200px;margin:auto;padding:0 16px 40px}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.row+.row{margin-top:10px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.row+.row,details .row{margin-top:10px}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
 .seg button{border:0;background:transparent;color:var(--ink);padding:7px 12px;font:inherit;cursor:pointer;border-right:1px solid var(--line)}
 .seg button:last-child{border-right:0}
 .seg button.on{background:var(--acc);color:#fff}
-select,input{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px}
+select,input{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:7px 10px;max-width:100%}
 input[type=search]{flex:1;min-width:140px}
 input[type=number]{width:110px}
-label.l{font-size:12px;color:var(--mute);display:flex;flex-direction:column;gap:3px}
+label.l{font-size:12px;color:var(--mute);display:flex;flex-direction:column;gap:3px;max-width:100%}
+label.grow{flex:1;min-width:200px}
 .btn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:7px 12px;cursor:pointer;font:inherit}
+.btn:disabled{opacity:.4}
+summary{cursor:pointer;color:var(--acc);font-size:13px;margin-top:10px}
+.hint{font-size:12px;color:var(--mute);margin-top:8px}
 .stats{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.stat{flex:1;min-width:110px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px}
+.stat{flex:1;min-width:100px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px}
 .stat b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
 .stat span{font-size:12px;color:var(--mute)}
 .tbl{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:12px}
@@ -378,41 +621,57 @@ th{position:sticky;top:0;background:var(--card);font-size:12px;color:var(--mute)
 th:hover{color:var(--ink)}
 th.sorted{color:var(--acc)}
 td.l,th.l{text-align:left}
+tbody tr.r{cursor:pointer}
+tbody tr.r:hover td{background:var(--accbg)}
 td.sym b{font-weight:600}
 td.sym small{display:block;color:var(--mute);max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .tag{font-size:10px;padding:1px 5px;border-radius:4px;background:var(--accbg);color:var(--acc);margin-left:4px;vertical-align:middle}
+.tag.b{background:var(--ambbg);color:var(--amb)}
 .pill{display:inline-block;min-width:68px;padding:2px 6px;border-radius:6px;font-weight:600}
 .up{color:var(--up);background:var(--upbg)} .dn{color:var(--dn);background:var(--dnbg)} .na{color:var(--mute)}
-.warn{cursor:help}
-tr.hi td{background:var(--accbg)}
-.pager{display:flex;justify-content:space-between;align-items:center;padding:10px;color:var(--mute);font-size:12px}
+.chip{display:inline-block;font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600}
+.chip.bo{background:var(--upbg);color:var(--up)} .chip.box{background:var(--accbg);color:var(--acc)} .chip.form{color:var(--mute)}
+.chip.nh{background:var(--ambbg);color:var(--amb)}
+tr.det td{background:var(--bg);text-align:left;white-space:normal;padding:12px}
+.dgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px 18px}
+.dgrid div span{display:block;font-size:11px;color:var(--mute)}
+.dgrid div b{font-weight:600;overflow-wrap:anywhere}
+.pager{display:flex;justify-content:space-between;align-items:center;padding:10px;color:var(--mute);font-size:12px;gap:8px}
 .foot{color:var(--mute);font-size:12px;margin-top:10px}
-@media (max-width:640px){td.sym small{max-width:120px} .hide-m{display:none}}
+@media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px}}
 </style></head><body>
-<header><h1>NSE Stock Scanner</h1>
+<header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div></header>
 <div class="wrap">
 <div class="panel">
   <div class="row"><div class="seg" id="periods"></div></div>
   <div class="row">
-    <label class="l">Universe<select id="universe"></select></label>
-    <label class="l">Sector<select id="sector"></select></label>
+    <label class="l grow">Setup<select id="setup"></select></label>
+    <label class="l grow">Universe<select id="universe"></select></label>
+  </div>
+  <div class="row">
     <label class="l">Show<select id="dir">
       <option value="all">All stocks</option><option value="up">Gainers only</option><option value="dn">Losers only</option></select></label>
     <label class="l">Sort by<select id="sortsel"></select></label>
+    <label class="l grow">Sector<select id="sector"></select></label>
   </div>
-  <div class="row">
-    <label class="l">Min price ₹<input type="number" id="minp" min="0" placeholder="0"></label>
-    <label class="l">Max price ₹<input type="number" id="maxp" min="0" placeholder="any"></label>
-    <label class="l">Min traded value (₹ Cr)<input type="number" id="minv" min="0" step="0.1" placeholder="0"></label>
-    <label class="l">Min % change<input type="number" id="minc" step="0.5" placeholder="any"></label>
-  </div>
+  <details>
+    <summary>More filters</summary>
+    <div class="row">
+      <label class="l">Min price ₹<input type="number" id="minp" min="0" placeholder="0"></label>
+      <label class="l">Max price ₹<input type="number" id="maxp" min="0" placeholder="any"></label>
+      <label class="l">Min traded value ₹Cr<input type="number" id="minv" min="0" step="0.1" placeholder="0"></label>
+      <label class="l">Min % change<input type="number" id="minc" step="0.5" placeholder="any"></label>
+      <label class="l">Min volume × avg<input type="number" id="minx" min="0" step="0.5" placeholder="any"></label>
+      <label class="l">Max % below 52W high<input type="number" id="max52" min="0" step="1" placeholder="any"></label>
+    </div>
+  </details>
   <div class="row">
     <input type="search" id="q" placeholder="Search symbol or name…">
-    <label class="row" style="gap:4px;font-size:12px;color:var(--mute)"><input type="checkbox" id="hideca"> Hide ⚠ split/bonus suspects</label>
     <button class="btn" id="csv">Export CSV</button>
     <button class="btn" id="reset">Reset</button>
   </div>
+  <div class="hint" id="hint"></div>
 </div>
 <div class="stats" id="stats"></div>
 <div class="tbl"><table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table>
@@ -422,67 +681,89 @@ tr.hi td{background:var(--accbg)}
 <script>
 const D = /*__DATA__*/;
 const M = D.meta, S = D.stocks, IDX = D.indices;
-const idxSets = {}; for (const k in IDX) idxSets[k] = new Set(IDX[k]);
+const idxSets = {}, memberOf = {};
+for (const k in IDX) { idxSets[k] = new Set(IDX[k]); IDX[k].forEach(s => (memberOf[s] = memberOf[s] || []).push(k)); }
 const PAGE = 100;
-const st = {period:"1D", uni:"ALL", sec:"", dir:"all", sort:"chg", asc:false, q:"", minp:null, maxp:null, minv:null, minc:null, hideca:false, page:0};
+const DEF = {period:"1D", setup:"all", uni:"ALL", sec:"", dir:"all", sort:"chg", asc:false, q:"", minp:null, maxp:null, minv:null, minc:null, minx:null, max52:null, page:0};
+const st = {...DEF};
+const open = new Set();
 
 const $ = id => document.getElementById(id);
-const fmt = (n, d=2) => n==null ? "—" : n.toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
-const fmtInt = n => n==null ? "—" : n.toLocaleString("en-IN");
+const esc = t => String(t ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = (n, d=2) => n==null ? "—" : Number(n).toLocaleString("en-IN",{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtInt = n => n==null ? "—" : Number(n).toLocaleString("en-IN");
+const sgn = n => n==null ? "—" : (n>0?"+":"")+fmt(n)+"%";
+const cnt = k => M.counts[k] || 0;
 
-// Corporate-action suspicion: big one-shot drop in a longer period that looks like a split/bonus ratio
-function caSuspect(s, p){
-  const v = s.ch[p]; if (v==null || p==="1D") return false;
-  return v <= -45;
-}
+const SETUPS = [
+  ["all","All stocks", s=>true, "Every stock, sorted by the column you choose."],
+  ["dbo","Darvas breakout today", s=>s.dv&&s.dv.st==="bo", "Closed above the top of its Darvas box today. Classic Darvas: under More filters set “Min volume × avg” to 1.5 and “Max % below 52W high” to 10."],
+  ["dnear","In Darvas box — near top (≤3%)", s=>s.dv&&s.dv.st==="box"&&s.c>=s.dv.t*0.97, "Box is confirmed and price is within 3% of the box top — a watchlist for tomorrow's breakouts."],
+  ["dbox","In Darvas box (any)", s=>s.dv&&s.dv.st==="box", "Box is confirmed (top held 3 days, then bottom held 3 days) and price is still inside it."],
+  ["nh","New 52-week high today", s=>s.nh, "Today's high is above every high of the past year."],
+  ["n52","Within 5% of 52-week high", s=>s.f52!=null&&s.f52>=-5, "Closing price is no more than 5% below the 52-week high."],
+  ["vol","Volume spike (≥2× average)", s=>s.vx!=null&&s.vx>=2, "Today's volume is at least twice the 50-day average."],
+  ["ipo","IPO base breakout (listed < 1 yr)", s=>s.ib, "Listed within the last year and closed at its highest level since listing."],
+  ["ipoall","Recent listings (< 1 yr)", s=>s.ipo!=null, "Stocks that started trading within the last year."],
+];
+const SETUP = Object.fromEntries(SETUPS.map(x=>[x[0],x]));
+const UNIS = [
+  ["ALL", `All stocks — NSE + BSE (${fmtInt(S.length)})`, null],
+  ["NM", `NSE Mainboard (${fmtInt(cnt("NSE"))})`, ["NSE"]],
+  ["NS", `NSE SME (${fmtInt(cnt("NSE SME"))})`, ["NSE SME"]],
+  ["BS", `BSE SME (${fmtInt(cnt("BSE SME"))})`, ["BSE SME"]],
+  ["AS", `All SME — NSE + BSE (${fmtInt(cnt("NSE SME")+cnt("BSE SME"))})`, ["NSE SME","BSE SME"]],
+  ["BM", `BSE-only Mainboard (${fmtInt(cnt("BSE"))})`, ["BSE"]],
+];
+const UNI = Object.fromEntries(UNIS.map(x=>[x[0],x[2]]));
 
-$("sub").textContent = `Prices as of ${M.asOf} · ${fmtInt(M.counts.Main)} Mainboard + ${fmtInt(M.counts.SME)} SME stocks · built ${M.generated}`;
+$("sub").textContent = `Prices as of ${M.asOf} · ${fmtInt(S.length)} stocks · updated ${M.generated}`;
 
-// period buttons
 M.periods.forEach(([k,l]) => {
   const b = document.createElement("button"); b.textContent = k; b.title = l; b.dataset.k = k;
   b.onclick = () => { st.period = k; st.page = 0; render(); };
   $("periods").appendChild(b);
 });
-
-// universe
-const uni = $("universe");
-[["ALL","All NSE stocks"],["MAIN","Mainboard only"],["SME","SME only"]].forEach(([v,t]) => uni.add(new Option(t,v)));
-const og = document.createElement("optgroup"); og.label = "Indices";
+SETUPS.forEach(([v,t]) => $("setup").add(new Option(t,v)));
+UNIS.forEach(([v,t]) => $("universe").add(new Option(t,v)));
+const og = document.createElement("optgroup"); og.label = "NSE indices";
 Object.keys(IDX).forEach(k => og.appendChild(new Option(`${k} (${IDX[k].length})`, "I:"+k)));
-uni.appendChild(og);
-
-// sector
-const secs = [...new Set(S.map(s=>s.sec).filter(Boolean))].sort();
+$("universe").appendChild(og);
 $("sector").add(new Option("All sectors",""));
-secs.forEach(s => $("sector").add(new Option(s,s)));
+[...new Set(S.map(s=>s.sec).filter(Boolean))].sort().forEach(s => $("sector").add(new Option(s,s)));
+[["chg","% change"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["tv","Traded value"],["sym","Symbol A–Z"]]
+  .forEach(([v,t])=>$("sortsel").add(new Option(t,v)));
 
 const COLS = [
   {k:"sym", t:"Stock", cls:"l"},
   {k:"c", t:"Close ₹"},
   {k:"chg", t:"% Chg"},
+  {k:"f52", t:"From 52W high", cls:"hide-m"},
+  {k:"vx", t:"Vol × avg", cls:"hide-m"},
+  {k:"dv", t:"Darvas box", cls:"l hide-m"},
   {k:"tv", t:"Value ₹Cr", cls:"hide-m"},
-  {k:"v", t:"Volume", cls:"hide-m"},
   {k:"sec", t:"Sector", cls:"l hide-m"},
 ];
-[["chg","% change"],["c","Price"],["tv","Traded value"],["v","Volume"],["sym","Symbol A–Z"]].forEach(([v,t])=>$("sortsel").add(new Option(t,v)));
-
+const DVORD = {bo:3, box:2, form:1};
 function val(s, k){
   switch(k){
     case "sym": return s.s; case "sec": return s.sec||"";
     case "chg": return s.ch[st.period];
+    case "dv": return s.dv ? DVORD[s.dv.st] : null;
     default: return s[k];
   }
 }
 
 function filtered(){
   const q = st.q.trim().toUpperCase();
+  const segs = st.uni.startsWith("I:") ? null : UNI[st.uni];
   const set = st.uni.startsWith("I:") ? idxSets[st.uni.slice(2)] : null;
+  const fn = SETUP[st.setup][2];
   return S.filter(s => {
-    if (st.uni==="MAIN" && s.seg!=="Main") return false;
-    if (st.uni==="SME" && s.seg!=="SME") return false;
-    if (set && !set.has(s.s)) return false;
+    if (segs && !segs.includes(s.seg)) return false;
+    if (set && !(s.x==="N" && set.has(s.s))) return false;
     if (st.sec && s.sec!==st.sec) return false;
+    if (!fn(s)) return false;
     const c = s.ch[st.period];
     if (st.dir==="up" && !(c>0)) return false;
     if (st.dir==="dn" && !(c<0)) return false;
@@ -490,8 +771,9 @@ function filtered(){
     if (st.minp!=null && s.c < st.minp) return false;
     if (st.maxp!=null && s.c > st.maxp) return false;
     if (st.minv!=null && s.tv < st.minv) return false;
-    if (st.hideca && caSuspect(s, st.period)) return false;
-    if (q && !s.s.includes(q) && !s.n.toUpperCase().includes(q)) return false;
+    if (st.minx!=null && (s.vx==null || s.vx < st.minx)) return false;
+    if (st.max52!=null && (s.f52==null || s.f52 < -st.max52)) return false;
+    if (q && !s.s.toUpperCase().includes(q) && !s.n.toUpperCase().includes(q) && !(s.code||"").includes(q)) return false;
     return true;
   });
 }
@@ -506,24 +788,53 @@ function sorted(arr){
   });
 }
 
+function dvCell(s){
+  const d = s.dv;
+  if (!d) return `<span class="na">—</span>`;
+  if (d.st==="form") return `<span class="chip form">Forming</span>`;
+  const lab = d.st==="bo" ? "Breakout" : "In box";
+  return `<span class="chip ${d.st}">${lab}</span> <small class="na">${fmt(d.b)}–${fmt(d.t)}</small>`;
+}
+
+function detail(s){
+  const d = s.dv || {};
+  const items = [];
+  const add = (k,v) => items.push(`<div><span>${k}</span><b>${v}</b></div>`);
+  add("Exchange", `${esc(s.seg)} · ${esc(s.sr)}${s.code?` · BSE ${esc(s.code)}`:""}`);
+  add("52-week high", `₹${fmt(s.h52)} (${sgn(s.f52)})${s.nh?" · new high today":""}`);
+  add("Volume today", `${fmtInt(s.v)} · ${s.vx==null?"—":fmt(s.vx,1)+"× 50-day avg"}`);
+  if (d.st==="bo" || d.st==="box") {
+    add(d.st==="bo" ? "Broke out of box" : "Darvas box", `₹${fmt(d.b)} – ₹${fmt(d.t)} (height ${fmt((d.t-d.b)/d.t*100,1)}%)`);
+    add("Box age", `${d.d} sessions`);
+    add("Risk to box bottom", `${fmt((s.c-d.b)/s.c*100,1)}%`);
+  } else add("Darvas box", d.st==="form" ? "Box still forming" : "Not enough history");
+  add("10% stop · 20% target", `₹${fmt(s.c*0.9)} · ₹${fmt(s.c*1.2)}`);
+  if (s.ipo!=null) add("Listed", `${s.ipo} sessions ago${s.ib?" · at high since listing":""}`);
+  const ch = M.periods.map(([k])=>`${k} ${sgn(s.ch[k])}`).join(" · ");
+  add("Returns", ch);
+  if (memberOf[s.s] && s.x==="N") add("Indices", esc(memberOf[s.s].join(", ")));
+  return `<tr class="det"><td colspan="${COLS.length}"><div class="dgrid">${items.join("")}</div></td></tr>`;
+}
+
 let current = [];
 function render(){
   document.querySelectorAll("#periods button").forEach(b => b.classList.toggle("on", b.dataset.k===st.period));
-  $("sortsel").value = st.sort;
+  $("sortsel").value = st.sort; $("setup").value = st.setup;
+  $("hint").textContent = SETUP[st.setup][3];
   current = sorted(filtered());
 
-  // stats
   const ch = current.map(s=>s.ch[st.period]).filter(v=>v!=null);
   const up = ch.filter(v=>v>0).length, dn = ch.filter(v=>v<0).length;
   const med = ch.length ? [...ch].sort((a,b)=>a-b)[Math.floor(ch.length/2)] : null;
+  const bo = current.filter(s=>s.dv&&s.dv.st==="bo").length;
   const pd = st.period==="1D" ? "vs previous close" : `since ${M.periodDates[st.period]||"—"}`;
   $("stats").innerHTML = `
     <div class="stat"><b>${fmtInt(current.length)}</b><span>stocks shown</span></div>
     <div class="stat"><b style="color:var(--up)">${fmtInt(up)}</b><span>advancing</span></div>
     <div class="stat"><b style="color:var(--dn)">${fmtInt(dn)}</b><span>declining</span></div>
-    <div class="stat"><b>${med==null?"—":(med>0?"+":"")+fmt(med)+"%"}</b><span>median change ${pd}</span></div>`;
+    <div class="stat"><b>${med==null?"—":sgn(med)}</b><span>median ${pd}</span></div>
+    <div class="stat"><b style="color:var(--up)">${fmtInt(bo)}</b><span>Darvas breakouts today</span></div>`;
 
-  // header
   $("head").innerHTML = COLS.map(c => {
     const on = st.sort===c.k; const arrow = on ? (st.asc?" ▲":" ▼") : "";
     const t = c.k==="chg" ? `% Chg (${st.period})` : c.t;
@@ -538,44 +849,59 @@ function render(){
   const pages = Math.max(1, Math.ceil(current.length/PAGE));
   st.page = Math.min(st.page, pages-1);
   const rows = current.slice(st.page*PAGE, st.page*PAGE+PAGE);
-  $("body").innerHTML = rows.map((s,i) => {
-    const c = s.ch[st.period];
+  $("body").innerHTML = rows.map(s => {
+    const c = s.ch[st.period], id = s.x+":"+(s.code||s.s);
     const cls = c==null ? "na" : c>0 ? "up" : c<0 ? "dn" : "na";
-    const warn = caSuspect(s, st.period) ? ` <span class="warn" title="Possible split/bonus — raw prices not adjusted">⚠</span>` : "";
-    const tag = s.seg==="SME" ? `<span class="tag">SME</span>` : (s.sr!=="EQ" ? `<span class="tag">${s.sr}</span>` : "");
-    return `<tr><td class="l sym"><b>${s.s}</b>${tag}<small>${s.n}</small></td>
+    let tags = "";
+    if (s.seg==="NSE SME") tags += `<span class="tag">SME</span>`;
+    if (s.seg==="BSE SME") tags += `<span class="tag b">BSE SME</span>`;
+    if (s.seg==="BSE") tags += `<span class="tag b">BSE</span>`;
+    if (s.seg==="NSE" && s.sr!=="EQ") tags += `<span class="tag">${esc(s.sr)}</span>`;
+    if (s.nh) tags += ` <span class="chip nh">52W high</span>`;
+    if (s.dv && s.dv.st==="bo") tags += ` <span class="chip bo">Breakout</span>`;
+    const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
       <td>${fmt(s.c)}</td>
-      <td><span class="pill ${cls}">${c==null?"—":(c>0?"+":"")+fmt(c)+"%"}</span>${warn}</td>
-      <td class="hide-m">${fmt(s.tv)}</td><td class="hide-m">${fmtInt(s.v)}</td>
-      <td class="l hide-m">${s.sec||"—"}</td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="l na" style="padding:24px">No stocks match these filters.</td></tr>`;
-  $("pinfo").textContent = current.length ? `Showing ${st.page*PAGE+1}–${Math.min((st.page+1)*PAGE,current.length)} of ${fmtInt(current.length)}` : "";
+      <td><span class="pill ${cls}">${sgn(c)}</span></td>
+      <td class="hide-m">${sgn(s.f52)}</td>
+      <td class="hide-m">${s.vx==null?"—":fmt(s.vx,1)+"×"}</td>
+      <td class="l hide-m">${dvCell(s)}</td>
+      <td class="hide-m">${fmt(s.tv)}</td>
+      <td class="l hide-m">${esc(s.sec)||"—"}</td></tr>`;
+    return main + (open.has(id) ? detail(s) : "");
+  }).join("") || `<tr><td colspan="${COLS.length}" class="l na" style="padding:24px">No stocks match these filters.</td></tr>`;
+  document.querySelectorAll("#body tr.r").forEach(tr => tr.onclick = () => {
+    const id = tr.dataset.id; open.has(id) ? open.delete(id) : open.add(id); render();
+  });
+  $("pinfo").textContent = current.length ? `Showing ${st.page*PAGE+1}–${Math.min((st.page+1)*PAGE,current.length)} of ${fmtInt(current.length)} · tap a stock for details` : "";
   $("prev").disabled = st.page===0; $("next").disabled = st.page>=pages-1;
 }
 
 const bind = (id, key, conv) => $(id).addEventListener("input", e => { st[key] = conv(e.target); st.page = 0; render(); });
 const numOrNull = e => e.value==="" ? null : parseFloat(e.value);
-bind("universe","uni",e=>e.value); bind("sector","sec",e=>e.value); bind("dir","dir",e=>e.value);
-bind("q","q",e=>e.value); bind("minp","minp",numOrNull); bind("maxp","maxp",numOrNull);
-bind("minv","minv",numOrNull); bind("minc","minc",numOrNull); bind("hideca","hideca",e=>e.checked);
+bind("setup","setup",e=>e.value); bind("universe","uni",e=>e.value); bind("sector","sec",e=>e.value);
+bind("dir","dir",e=>e.value); bind("q","q",e=>e.value);
+["minp","maxp","minv","minc","minx","max52"].forEach(k => bind(k,k,numOrNull));
 $("sortsel").addEventListener("input", e => { st.sort = e.target.value; st.asc = st.sort==="sym"; st.page=0; render(); });
 $("prev").onclick = () => { st.page--; render(); window.scrollTo(0,0); };
 $("next").onclick = () => { st.page++; render(); window.scrollTo(0,0); };
 $("reset").onclick = () => location.reload();
 $("csv").onclick = () => {
-  const hdr = ["Symbol","Name","Segment","Series","Sector","Close", ...M.periods.map(p=>"%Chg "+p[0]),"Volume","Value_Cr"];
-  const esc = v => `"${String(v??"").replace(/"/g,'""')}"`;
-  const lines = [hdr.join(",")].concat(current.map(s => [s.s,s.n,s.seg,s.sr,s.sec,s.c, ...M.periods.map(p=>s.ch[p[0]]??""), s.v, s.tv].map(esc).join(",")));
+  const hdr = ["Symbol","Name","Segment","Series","BSE_Code","Sector","Close", ...M.periods.map(p=>"%Chg "+p[0]),
+               "52W_High","From_52WH_%","Vol_x","Darvas","Box_Top","Box_Bottom","Volume","Value_Cr"];
+  const q = v => `"${String(v??"").replace(/"/g,'""')}"`;
+  const lines = [hdr.join(",")].concat(current.map(s => [s.s,s.n,s.seg,s.sr,s.code,s.sec,s.c, ...M.periods.map(p=>s.ch[p[0]]??""),
+     s.h52,s.f52,s.vx,s.dv?s.dv.st:"",s.dv&&s.dv.t,s.dv&&s.dv.b,s.v,s.tv].map(q).join(",")));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/csv"}));
-  a.download = `nse_scan_${st.period}_${M.asOf.replace(/ /g,"")}.csv`; a.click();
+  a.download = `scan_${st.setup}_${st.period}_${M.asOf.replace(/ /g,"")}.csv`; a.click();
 };
-$("foot").innerHTML = "Source: NSE end-of-day bhavcopy & index constituent files. Returns use raw closing prices, not adjusted for splits, bonuses or dividends — ⚠ marks a ≥45% fall that may be a corporate action. Not investment advice.";
+$("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
 render();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
-</script></body></html>"""
+</script></body></html>
+"""
 
 if __name__ == "__main__":
     main()
