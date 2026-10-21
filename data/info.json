@@ -1,6 +1,6 @@
 {
  "asOf": "21 Oct 2026",
- "generated": "21 Oct 2026, 10:09 PM",
+ "generated": "21 Oct 2026, 10:17 PM",
  "periodDates": {
   "1W": "14 Oct 2026",
   "1M": "21 Sep 2026",
@@ -35,28 +35,27 @@
   ]
  ],
  "counts": {
-  "NSE": 2946,
+  "NSE": 2591,
   "NSE SME": 476,
-  "BSE": 1939,
+  "BSE": 1522,
   "BSE SME": 393
  },
  "sessions": 252,
  "historyFrom": "13 Oct 2025",
- "bse": "ok (2332 BSE-only stocks, 252 sessions)",
+ "bse": "ok (1915 BSE-only stocks, 252 sessions)",
  "bseSeries": {
   "A": 703,
   "T": 197,
   "X": 1033,
   "Z": 58,
-  "B": 1588,
+  "B": 1586,
   "XT": 348,
   "P": 11,
   "ZP": 1,
   "M": 297,
   "MT": 95,
-  "IF": 20,
   "MS": 1,
-  "F": 410
+  "F": 13
  },
- "adjustments": 3765
+ "adjustments": 2167
 }
