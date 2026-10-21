@@ -22,7 +22,7 @@ The first run downloads ~1 year of files (5-10 minutes); later runs only fetch
 the new day. Downloads are cached in ./nse_cache.
 """
 
-import bisect, csv, gzip, io, json, os, sys, time, zipfile, webbrowser
+import bisect, csv, gzip, io, json, os, re, sys, time, zipfile, webbrowser
 from datetime import date, datetime, timedelta
 
 try:
@@ -45,6 +45,8 @@ HISTORY_DAYS = 375                 # calendar days of history to keep
 NSE_MAIN = {"EQ", "BE", "BZ"}
 NSE_SME = {"SM", "ST"}
 BSE_SME = {"M", "MT", "MS"}
+BSE_SKIP_SERIES = {"IF", "G"}            # REITs / InvITs, government securities
+DEBT_NAME = re.compile(r"\d%|BONDS?\b|\bNCDS?\b|TAX ?FREE|-PVT\b|-ZC-|DEBENTURE", re.I)
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -199,9 +201,13 @@ def parse(raw, ex):
         if ex == "nse":
             if series not in NSE_MAIN and series not in NSE_SME:
                 continue
+            if isin and not isin.startswith("INE"):      # ETFs and funds (INF…)
+                continue
             key = sym = r.get("TckrSymb", "")
         else:
             if r.get("FinInstrmTp", "STK") not in ("STK", "") or not isin.startswith("INE"):
+                continue
+            if series in BSE_SKIP_SERIES or DEBT_NAME.search(r.get("FinInstrmNm", "")):
                 continue
             code = r.get("FinInstrmId", "") or r.get("TckrSymb", "")
             key, sym = "B:" + code, r.get("TckrSymb", "") or code
@@ -258,18 +264,49 @@ def build_series(days, keys):
     return ser
 
 
+SPLIT_RATIOS = [1/2, 1/3, 1/4, 1/5, 1/6, 1/8, 1/10, 1/20, 1/25, 1/50, 1/100,
+                2/3, 3/4, 3/5, 2/5, 3/10]
+
+
+def snap(g, ratios):
+    k = min(ratios, key=lambda k: abs(g / k - 1))
+    tol = 0.03 if 0.55 < k < 1 else 0.06   # bonus ratios like 2/3, 3/4 need a closer match
+    return k if abs(g / k - 1) <= tol else None
+
+
+def split_factor(last, o, c, prev):
+    """Detect a split / bonus / consolidation between two sessions. Returns factor or None."""
+    if not last or not o:
+        return None
+    g = o / last
+    if prev:  # exchange already adjusted the previous close, and the price confirms it
+        fp = prev / last
+        if abs(fp - 1) > 0.02 and abs(g / fp - 1) < 0.08:
+            return fp
+    for x in (g, c / last if c else None):   # overnight drop that matches a split ratio
+        if x is None:
+            continue
+        if x < 0.78:
+            k = snap(x, SPLIT_RATIOS)
+            if k:
+                return k
+        elif x > 1.8:
+            k = snap(x, [float(n) for n in range(2, 11)])
+            if k:
+                return k
+    return None
+
+
 def adjust(recs):
-    """Adjust earlier prices for splits/bonuses using the exchange's adjusted previous close."""
+    """Adjust earlier prices and volumes for splits, bonuses and consolidations."""
     n = len(recs)
     factors = [1.0] * n
     events = 0
     for j in range(1, n):
-        prev, last = recs[j][5], recs[j - 1][4]
-        if prev and last:
-            f = prev / last
-            if abs(f - 1) > 0.005 and 0.01 < f < 100:
-                factors[j] = f
-                events += 1
+        f = split_factor(recs[j - 1][4], recs[j][1], recs[j][4], recs[j][5])
+        if f:
+            factors[j] = f
+            events += 1
     mult = 1.0
     for j in range(n - 1, -1, -1):
         if mult != 1.0:
@@ -333,7 +370,7 @@ def r2(x):
     return None if x is None else round(x, 2)
 
 
-def analyse(recs, latest_day, first_session, periods):
+def analyse(recs, latest_day, sessions, periods):
     """Compute changes and setups from one stock's adjusted daily records (last = today)."""
     dates = [r[0] for r in recs]
     today = recs[-1]
@@ -374,7 +411,8 @@ def analyse(recs, latest_day, first_session, periods):
     # recent listing (appeared after the start of history and trades regularly)
     out["ipo"] = None
     out["ib"] = False
-    if dates[0] > first_session + timedelta(days=7):
+    since = len(sessions) - bisect.bisect_left(sessions, dates[0])
+    if dates[0] > sessions[0] + timedelta(days=7) and len(recs) >= 0.9 * since:
         age = len(recs)
         out["ipo"] = age
         if age >= 10 and prior_high is not None and c > max(r[2] for r in recs[:-1]):
@@ -476,7 +514,7 @@ def main():
                 continue
             adj_events += adjust(recs)
             r = today_rows[key]
-            a = analyse(recs, latest_day, sessions[0], PERIODS)
+            a = analyse(recs, latest_day, sessions, PERIODS)
             if ex == "nse":
                 seg = "NSE SME" if r["series"] in NSE_SME else "NSE"
             else:
