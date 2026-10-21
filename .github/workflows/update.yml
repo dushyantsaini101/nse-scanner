@@ -1,0 +1,51 @@
+name: Update scanner
+
+on:
+  schedule:
+    - cron: "15 14 * * 1-5"
+    - cron: "30 16 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Restore downloaded NSE files
+        uses: actions/cache@v4
+        with:
+          path: nse_cache
+          key: nse-cache-${{ github.run_id }}
+          restore-keys: nse-cache-
+      - name: Build scanner
+        env:
+          OUT_DIR: site
+          NSE_CACHE: nse_cache
+        run: |
+          pip install requests
+          python nse_scanner.py
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
