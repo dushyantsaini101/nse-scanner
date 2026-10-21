@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -33,9 +33,37 @@ jobs:
         env:
           OUT_DIR: site
           NSE_CACHE: nse_cache
+          TZ: Asia/Kolkata
         run: |
           pip install requests
           python nse_scanner.py
+      - name: Save data copy for Claude
+        run: |
+          mkdir -p data
+          python - <<'PY'
+          import re, json, csv
+          h = open("site/index.html", encoding="utf-8").read()
+          d = json.loads(re.search(r"const D = (\{.*?\});\n", h, re.S).group(1))
+          m, periods = d["meta"], [p[0] for p in d["meta"]["periods"]]
+          idx = {}
+          for name, syms in d["indices"].items():
+              for s in syms:
+                  idx.setdefault(s, []).append(name)
+          with open("data/scan.csv", "w", newline="", encoding="utf-8") as f:
+              w = csv.writer(f)
+              w.writerow(["Symbol", "Name", "Segment", "Series", "Sector", "Close"]
+                         + ["Chg_" + p for p in periods] + ["Volume", "Value_Cr", "Indices"])
+              for s in d["stocks"]:
+                  w.writerow([s["s"], s["n"], s["seg"], s["sr"], s["sec"], s["c"]]
+                             + [s["ch"].get(p, "") for p in periods]
+                             + [s["v"], s["tv"], "; ".join(idx.get(s["s"], []))])
+          json.dump(m, open("data/info.json", "w"), indent=1)
+          PY
+          git config user.name "scanner-bot"
+          git config user.email "scanner-bot@users.noreply.github.com"
+          git add data
+          git commit -m "Data for $(date +%d-%b-%Y)" || echo "no change"
+          git push
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
