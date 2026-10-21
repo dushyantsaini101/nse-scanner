@@ -264,18 +264,23 @@ def build_series(days, keys):
     return ser
 
 
-SPLIT_RATIOS = [1/2, 1/3, 1/4, 1/5, 1/6, 1/8, 1/10, 1/20, 1/25, 1/50, 1/100,
-                2/3, 3/4, 3/5, 2/5, 3/10]
+# price factors produced by splits, bonuses and both together (e.g. 10:1 split + 1:2 bonus = 1/15)
+_SPLITS = [1, 2, 4, 5, 10, 20, 25, 50, 100]
+_BONUS = [1, 2, 1.5, 4 / 3, 5 / 4, 3, 5 / 3, 4, 5, 6]
+BIG_RATIOS = sorted({1 / (x * y) for x in _SPLITS for y in _BONUS if x * y >= 1.8})
+BONUS_RATIOS = [2 / 3, 3 / 4, 3 / 5]
+CONSOLIDATION = [float(n) for n in range(2, 11)]
 
 
-def snap(g, ratios):
+def snap(g, ratios, tol):
     k = min(ratios, key=lambda k: abs(g / k - 1))
-    tol = 0.03 if 0.55 < k < 1 else 0.06   # bonus ratios like 2/3, 3/4 need a closer match
     return k if abs(g / k - 1) <= tol else None
 
 
-def split_factor(last, o, c, prev):
-    """Detect a split / bonus / consolidation between two sessions. Returns factor or None."""
+def split_factor(last, o, c, prev, consecutive):
+    """Detect a split / bonus / consolidation between two trades of a stock. Returns factor or None.
+    Exchange circuit limits stop normal stocks falling ~45% overnight, so a drop that size is a
+    corporate action; smaller bonus-sized drops must match the ratio closely."""
     if not last or not o:
         return None
     g = o / last
@@ -283,27 +288,26 @@ def split_factor(last, o, c, prev):
         fp = prev / last
         if abs(fp - 1) > 0.02 and abs(g / fp - 1) < 0.08:
             return fp
-    for x in (g, c / last if c else None):   # overnight drop that matches a split ratio
-        if x is None:
-            continue
-        if x < 0.78:
-            k = snap(x, SPLIT_RATIOS)
-            if k:
-                return k
-        elif x > 1.8:
-            k = snap(x, [float(n) for n in range(2, 11)])
-            if k:
-                return k
+    x = g if g < 1 else min(g, c / last if c else g)
+    if x < 0.55 and (consecutive or x < 0.3):
+        return snap(x, BIG_RATIOS, 0.06) or x
+    if not consecutive:
+        return None
+    if x < 0.78:
+        return snap(x, BONUS_RATIOS, 0.03)
+    if g > 1.8:
+        return snap(g, CONSOLIDATION, 0.06)
     return None
 
 
-def adjust(recs):
+def adjust(recs, sess_idx):
     """Adjust earlier prices and volumes for splits, bonuses and consolidations."""
     n = len(recs)
     factors = [1.0] * n
     events = 0
     for j in range(1, n):
-        f = split_factor(recs[j - 1][4], recs[j][1], recs[j][4], recs[j][5])
+        consecutive = sess_idx.get(recs[j][0], -9) - sess_idx.get(recs[j - 1][0], -99) == 1
+        f = split_factor(recs[j - 1][4], recs[j][1], recs[j][4], recs[j][5], consecutive)
         if f:
             factors[j] = f
             events += 1
@@ -504,6 +508,7 @@ def main():
     # ---- analytics
     print("Calculating…")
     stocks, adj_events = [], 0
+    sess_idx = {d: i for i, d in enumerate(sessions)}
     groups = [("nse", nse_days, latest)]
     if bse_days:
         groups.append(("bse", bse_days, bse_days[-1][1]))
@@ -512,7 +517,7 @@ def main():
         for key, recs in ser.items():
             if not recs or recs[-1][0] != latest_day:
                 continue
-            adj_events += adjust(recs)
+            adj_events += adjust(recs, sess_idx)
             r = today_rows[key]
             a = analyse(recs, latest_day, sessions, PERIODS)
             if ex == "nse":
