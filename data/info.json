@@ -1,0 +1,41 @@
+{
+ "asOf": "21 Oct 2026",
+ "generated": "21 Oct 2026, 09:31 PM",
+ "periodDates": {
+  "1W": "14 Oct 2026",
+  "1M": "21 Sep 2026",
+  "3M": "22 Jul 2026",
+  "6M": "22 Apr 2026",
+  "1Y": "21 Oct 2025"
+ },
+ "periods": [
+  [
+   "1D",
+   "1 Day"
+  ],
+  [
+   "1W",
+   "1 Week"
+  ],
+  [
+   "1M",
+   "1 Month"
+  ],
+  [
+   "3M",
+   "3 Months"
+  ],
+  [
+   "6M",
+   "6 Months"
+  ],
+  [
+   "1Y",
+   "1 Year"
+  ]
+ ],
+ "counts": {
+  "Main": 2946,
+  "SME": 476
+ }
+}
