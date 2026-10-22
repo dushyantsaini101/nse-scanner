@@ -301,16 +301,17 @@ def split_factor(last, o, c, prev, consecutive):
 
 
 def adjust(recs, sess_idx):
-    """Adjust earlier prices and volumes for splits, bonuses and consolidations."""
+    """Adjust earlier prices and volumes for splits, bonuses and consolidations.
+    Returns the list of (date, factor) adjustments made."""
     n = len(recs)
     factors = [1.0] * n
-    events = 0
+    events = []
     for j in range(1, n):
         consecutive = sess_idx.get(recs[j][0], -9) - sess_idx.get(recs[j - 1][0], -99) == 1
         f = split_factor(recs[j - 1][4], recs[j][1], recs[j][4], recs[j][5], consecutive)
         if f:
             factors[j] = f
-            events += 1
+            events.append((recs[j][0], f))
     mult = 1.0
     for j in range(n - 1, -1, -1):
         if mult != 1.0:
@@ -322,20 +323,20 @@ def adjust(recs, sess_idx):
 
 def darvas(H, L, C):
     """Classic Darvas box: a top holds for 3 days, then a bottom holds for 3 days.
-    Returns (status, top, bottom, sessions_since_box) — status: bo / box / form."""
+    Returns (status, top, bottom, sessions_since_box, sessions_since_box_start) — status: bo / box / form."""
     n = len(H)
     if n < 8:
         return None
     state, top, top_i, cnt = 0, H[0], 0, 0
     bot = bcnt = 0
-    box_t = box_b = box_i = None
+    box_t = box_b = box_i = box_s = None
     bo_box = None
     for i in range(1, n):
         h, l, c = H[i], L[i], C[i]
         if state == 2:
             if c > box_t:
                 if i == n - 1:
-                    bo_box = (box_t, box_b, i - box_i)
+                    bo_box = (box_t, box_b, i - box_i, i - box_s)
                 state, top, top_i, cnt = 0, h, i, 0
             elif c < box_b:
                 state, top, top_i, cnt = 0, h, i, 0
@@ -351,7 +352,7 @@ def darvas(H, L, C):
                     bcnt = i - (top_i + 1 + seg.index(bot))
                     state = 1
                     if bcnt >= 3:
-                        state, box_t, box_b, box_i = 2, top, bot, i
+                        state, box_t, box_b, box_i, box_s = 2, top, bot, i, top_i
             continue
         if state == 1:
             if h > top:
@@ -362,12 +363,12 @@ def darvas(H, L, C):
             else:
                 bcnt += 1
             if bcnt >= 3:
-                state, box_t, box_b, box_i = 2, top, bot, i
+                state, box_t, box_b, box_i, box_s = 2, top, bot, i, top_i
     if bo_box:
         return ("bo",) + bo_box
     if state == 2:
-        return ("box", box_t, box_b, n - 1 - box_i)
-    return ("form", None, None, None)
+        return ("box", box_t, box_b, n - 1 - box_i, n - 1 - box_s)
+    return ("form", None, None, None, None)
 
 
 def r2(x):
@@ -409,7 +410,7 @@ def analyse(recs, latest_day, sessions, periods):
     # Darvas box on the last year of sessions
     sl = recs[j52:]
     dv = darvas([r[2] for r in sl], [r[3] for r in sl], [r[4] for r in sl])
-    out["dv"] = ({"st": dv[0], "t": r2(dv[1]), "b": r2(dv[2]), "d": dv[3]}
+    out["dv"] = ({"st": dv[0], "t": r2(dv[1]), "b": r2(dv[2]), "d": dv[3], "s": dv[4]}
                  if dv and dv[0] != "form" else ({"st": "form"} if dv else None))
 
     # recent listing (appeared after the start of history and trades regularly)
@@ -466,6 +467,13 @@ def main():
     # ---- BSE: only stocks not listed on NSE
     print("BSE: loading…")
     nse_isins = {r["isin"] for r in latest.values() if r["isin"]}
+    first_seen = {}
+    for d, rows in nse_days:
+        for k in rows:
+            first_seen.setdefault(k, d)
+    late_isin = {latest[k]["isin"]: k for k, d0 in first_seen.items()
+                 if k in latest and latest[k]["isin"] and d0 > sessions[0] + timedelta(days=7)}
+    late_hist = {}   # NSE key -> {date: BSE row} for stocks that traded on BSE before NSE
     bse_days, bse_status, bse_series = [], "", {}
     raw = get_raw("bse", latest_day)
     if not raw:
@@ -482,6 +490,10 @@ def main():
             if raw_d:
                 rows = parse(raw_d, "bse")
                 bse_days.append((d, {k: rows[k] for k in bse_only if k in rows}))
+                for r in rows.values():
+                    nk = late_isin.get(r["isin"])
+                    if nk and d < first_seen[nk]:
+                        late_hist.setdefault(nk, {})[d] = r
                 errors = 0
             elif last_status.get("bse") == "error":
                 errors += 1
@@ -490,7 +502,8 @@ def main():
                     break
         bse_days.append((latest_day, bse_only))
         bse_days.sort(key=lambda x: x[0])
-        bse_status = f"ok ({len(bse_only)} BSE-only stocks, {len(bse_days)} sessions)"
+        bse_status = (f"ok ({len(bse_only)} BSE-only stocks, {len(bse_days)} sessions, "
+                      f"{len(late_hist)} stocks with earlier BSE history)")
         print(f"  {bse_status}")
 
     # ---- indices
@@ -507,7 +520,7 @@ def main():
 
     # ---- analytics
     print("Calculating…")
-    stocks, adj_events = [], 0
+    stocks, adj_log, charts = [], [], {}
     sess_idx = {d: i for i, d in enumerate(sessions)}
     groups = [("nse", nse_days, latest)]
     if bse_days:
@@ -517,15 +530,25 @@ def main():
         for key, recs in ser.items():
             if not recs or recs[-1][0] != latest_day:
                 continue
-            adj_events += adjust(recs, sess_idx)
+            if ex == "nse" and key in late_hist:      # traded on BSE before it listed on NSE
+                early = [[d, b["o"], b["h"], b["l"], b["c"], b["prev"], b["vol"]]
+                         for d, b in sorted(late_hist[key].items()) if d < recs[0][0]]
+                if early:
+                    recs[0][5] = None                 # NSE's first "previous close" is not a BSE close
+                    recs = early + recs
             r = today_rows[key]
+            for d, f in adjust(recs, sess_idx):
+                adj_log.append((d, r["sym"], "BSE" if ex == "bse" else "NSE",
+                                r["code"] if ex == "bse" else "", round(f, 5)))
+            cid = chart_id(ex, r)
+            charts[cid] = recs
             a = analyse(recs, latest_day, sessions, PERIODS)
             if ex == "nse":
                 seg = "NSE SME" if r["series"] in NSE_SME else "NSE"
             else:
                 seg = "BSE SME" if r["series"] in BSE_SME else "BSE"
             stocks.append({
-                "s": r["sym"], "n": r["name"], "seg": seg, "sr": r["series"],
+                "s": r["sym"], "n": r["name"], "seg": seg, "sr": r["series"], "k": cid, "i": r["isin"],
                 "x": "B" if ex == "bse" else "N", "code": r["code"] if ex == "bse" else "",
                 "sec": sector.get(r["sym"], "") if ex == "nse" else "",
                 "c": r["c"], "v": int(r["vol"]), "tv": round(r["val"] / 1e7, 2),
@@ -546,7 +569,7 @@ def main():
         "historyFrom": sessions[0].strftime("%d %b %Y"),
         "bse": bse_status,
         "bseSeries": bse_series,
-        "adjustments": adj_events,
+        "adjustments": len(adj_log),
     }
 
     html = TEMPLATE.replace("/*__DATA__*/", json.dumps(
@@ -555,7 +578,13 @@ def main():
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(html)
     write_app_files(os.path.dirname(OUT))
+    write_charts(os.path.dirname(OUT), charts)
     write_csv(stocks, index_members, meta)
+    with open(os.path.join(DATA_DIR, "adjustments.csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["Date", "Symbol", "Exchange", "BSE_Code", "Price_factor"])
+        for row in sorted(adj_log, key=lambda x: (x[0], x[1]), reverse=True):
+            w.writerow([row[0].isoformat()] + list(row[1:]))
 
     print(f"\nDone: {len(stocks):,} stocks as of {meta['asOf']}  {counts}")
     print(f"BSE: {bse_status}")
@@ -565,6 +594,32 @@ def main():
             webbrowser.open("file://" + OUT)
         except Exception:
             pass
+
+
+def chart_id(ex, r):
+    """File name (without .json) of a stock's chart data; the page builds the same id."""
+    if ex == "bse":
+        return "B_" + re.sub(r"[^A-Za-z0-9_-]", "_", r["code"] or r["sym"])
+    return "N_" + re.sub(r"[^A-Za-z0-9_-]", "_", r["sym"])
+
+
+def write_charts(folder, charts):
+    """One small JSON file per stock with its adjusted daily candles: c/<id>.json."""
+    cdir = os.path.join(folder, "c")
+    os.makedirs(cdir, exist_ok=True)
+    for name in os.listdir(cdir):
+        if name.endswith(".json"):
+            os.remove(os.path.join(cdir, name))
+    epoch = date(1970, 1, 1)
+    for cid, recs in charts.items():
+        out = {"d": [], "o": [], "h": [], "l": [], "c": [], "v": []}
+        for d, o, h, l, c, _prev, v in recs:
+            out["d"].append((d - epoch).days)
+            out["o"].append(round(o, 2)); out["h"].append(round(h, 2))
+            out["l"].append(round(l, 2)); out["c"].append(round(c, 2))
+            out["v"].append(int(v))
+        with open(os.path.join(cdir, cid + ".json"), "w") as f:
+            json.dump(out, f, separators=(",", ":"))
 
 
 def write_csv(stocks, index_members, meta):
@@ -581,7 +636,7 @@ def write_csv(stocks, index_members, meta):
                    + ["Chg_" + p for p in periods]
                    + ["High_52W", "From_52WH_pct", "New_52W_High", "Vol_x_50d",
                       "Darvas_Status", "Box_Top", "Box_Bottom", "Box_Sessions",
-                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices"])
+                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices", "ISIN"])
         for s in stocks:
             dv = s.get("dv") or {}
             w.writerow([s["s"], "BSE" if s["x"] == "B" else "NSE", s["code"], s["n"], s["seg"],
@@ -590,7 +645,7 @@ def write_csv(stocks, index_members, meta):
                        + [s["h52"], s["f52"], s["nh"], s["vx"],
                           dv.get("st", ""), dv.get("t", ""), dv.get("b", ""), dv.get("d", ""),
                           s["ipo"] or "", s["ib"], s["v"], s["tv"],
-                          "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else ""])
+                          "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else "", s["i"]])
     with open(os.path.join(DATA_DIR, "meta_full.json"), "w") as f:
         json.dump(meta, f, indent=1)
 
@@ -600,7 +655,7 @@ def write_csv(stocks, index_members, meta):
 ICON_192 = "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAAENklEQVR4nO3dS27bSABF0XIj+1BmXo57mt14N5l6Oe6Zs5MeCBCESLJpPrJ+PGeUODJFoC6qyNInT6eX9wJr/dP6BBibgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAhoYKfX361PQUDDOtfTvCEBDem6m7YNCWg8t8U0bEhAg7nbyp/XX/XP5ExAw2tYTxHQWG6nn7b1FAENpMN6ioBG0fx2/REBDaC3C+drAupdz/UUAXWu83qKgHrWfz1FQGPprZ4ioG71edN+S0A9GqWeIqAOdbvlc9fT6eW99TmwMpoepiUBtRdOOV5MPbR8wfKGMgYmICICIiIgIgJqaawtn7sE1MwE9RQBtTJHPUVATUxTTxFQfTPVUwRU2WT1FAERElA9A73LZzkBVTJlPUVAdcx36XMhoN0N8eGK1QS0r7nrKQLa1fT1lFJ+tD6BjV2PWduhOkI9ZbKA/hqzy1/rD9tB6inTBPT5bc75X9uO35T1lDkCWniTXG1CmnXL567hL6JXbLGcXn/vtzFzqHrK0DNQGMEeE9LEG4aPjBrQJ0N1CaLy0nacC+drQy5hS+o5//lb45csbcesp4w4Ay2s5/aH+01Ih62njBXQd9O5+5jlc8zCko5cTxkooLCe2wd/t6Tlz3KcesooAW1Vz91fTJa2o9203+o9oM9Hd5PRWre0/Xn9pZ7SeUB7TDxfHvC7E9LB9RvQl/V8vD2vOOzPf//7/AErLpL++sVD6TGgJcvWunouv/hlRuWbS9sx6ykdBrRk2Vpdz8XH2/OShsqyCemw9ZTedqJ7HqRH+9rNT6ytXmagCndbm7iekPo5q4a6CKjnieeRbk+ssvZL2Ij1cNE4IPWMrtkSJp05tJmB1DONBgGpZyZVl7BR7tVZrl5AJp4p1VvCHlWinqFVXcJu30PTfz07veY/jWa38f2nU6q85j+62ndh527mrmfDI/SvwW38EPWwUPvXwhiagIgIiIiAiAiIiICICIiIgIjs8lLG6h3YI+z9T2b7GSjZv/94ez7C9v9MNg5ok+HX0EBcAxEREBEBEREQEQERERARAREREBEBEREQEQERERARAREREBEBEREQEQERERARAREREBEBEdk4oE0+2PXlQfJnWXKEOs+Sf91W2y/sMgMReTq9vG9+0DqfTK3z/al1nmXdf+Hbw5cF7hIQx2EJIyIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAi/wMGelvdl+PwXwAAAABJRU5ErkJggg=="
 ICON_512 = "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"
 MANIFEST = '{\n  "name": "NSE Stock Scanner",\n  "short_name": "NSE Scanner",\n  "start_url": "./",\n  "scope": "./",\n  "display": "standalone",\n  "background_color": "#f6f7f9",\n  "theme_color": "#1f4fd8",\n  "icons": [\n    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},\n    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},\n    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}\n  ]\n}\n'
-SERVICE_WORKER = '// Network-first: always try to get today\'s data, fall back to the last copy when offline.\nconst CACHE = "nse-scanner-v1";\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", e => {\n  if (e.request.method !== "GET") return;\n  e.respondWith(\n    fetch(e.request, {cache: "no-store"})\n      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })\n      .catch(() => caches.match(e.request))\n  );\n});\n'
+SERVICE_WORKER = '// Network-first: always try to get today\'s data, fall back to the last copy when offline.\nconst CACHE = "nse-scanner-v2";\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", e => {\n  if (e.request.method !== "GET") return;\n  e.respondWith(\n    fetch(e.request, {cache: "no-store"})\n      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })\n      .catch(() => caches.match(e.request))\n  );\n});\n'
 
 
 def write_app_files(folder):
@@ -681,11 +736,47 @@ tr.det td{background:var(--bg);text-align:left;white-space:normal;padding:12px}
 .dgrid div b{font-weight:600;overflow-wrap:anywhere}
 .pager{display:flex;justify-content:space-between;align-items:center;padding:10px;color:var(--mute);font-size:12px;gap:8px}
 .foot{color:var(--mute);font-size:12px;margin-top:10px}
-@media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px}}
+.tabs{display:flex;gap:6px;margin-top:12px}
+.tabs button{flex:0 0 auto;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:20px;padding:7px 16px;font:inherit;font-weight:600;cursor:pointer}
+.tabs button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+[hidden]{display:none!important}
+.chartbox{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.chart{height:320px;width:100%}
+.chartbar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:space-between;padding:8px 10px;font-size:11px;color:var(--mute);border-top:1px solid var(--line)}
+.chartbar i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:4px}
+.chartbar i.dash{border-top-style:dashed}
+.chartbar a{color:var(--acc);font-weight:600;text-decoration:none;font-size:12px}
+.chip.hold{background:var(--accbg);color:var(--acc)} .chip.part{background:var(--ambbg);color:var(--amb)} .chip.exit{background:var(--dnbg);color:var(--dn)}
+.chip.warn{background:var(--dnbg);color:var(--dn)} .chip.tgt{background:var(--upbg);color:var(--up)}
+td small.sub2{display:block;color:var(--mute);font-size:11px}
+h3.sec{font-size:15px;margin:18px 0 8px}
+.steps{margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.6}
+.err{color:var(--dn);font-size:13px;margin-top:8px}
+input.url{flex:1;min-width:200px}
+@media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .stat b{font-size:16px} .stat{min-width:96px}}
 </style></head><body>
 <header><h1>Stock Scanner</h1>
-<div class="sub" id="sub"></div></header>
-<div class="wrap">
+<div class="sub" id="sub"></div>
+<nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="pf">Mera Portfolio</button></nav></header>
+<div class="wrap" id="v-pf" hidden>
+  <div class="panel" id="pfsetup">
+    <b>Portfolio sheet ka link</b>
+    <div class="hint" style="margin-top:4px">Link sirf is phone/browser mein save hota hai. Website kholne wale doosre logon ko aapka portfolio nahi dikhta.</div>
+    <div class="row" style="margin-top:8px"><input class="url" id="pfurl" placeholder="Google Sheet ka link yahan paste karo"><button class="btn" id="pfsave">Save</button></div>
+    <ol class="steps" id="pfhelp">
+      <li>Google Sheet <b>My Holdings (auto-updated)</b> kholo.</li>
+      <li><b>File → Share → Publish to web</b> dabao, "Holdings" tab aur <b>Comma-separated values (.csv)</b> chuno, phir <b>Publish</b>.</li>
+      <li>Jo link mile use copy karke upar paste karo aur <b>Save</b> dabao.</li>
+    </ol>
+    <div class="err" id="pferr"></div>
+  </div>
+  <div class="stats" id="pfstats"></div>
+  <div class="tbl" id="pfholdbox" hidden><table><thead><tr id="pfhead"></tr></thead><tbody id="pfbody"></tbody></table></div>
+  <h3 class="sec" id="pfxtitle" hidden>Beche hue (Exited)</h3>
+  <div class="tbl" id="pfexitbox" hidden><table><thead><tr id="pfxhead"></tr></thead><tbody id="pfxbody"></tbody></table></div>
+  <div class="foot" id="pffoot"></div>
+</div>
+<div class="wrap" id="v-scan">
 <div class="panel">
   <div class="row"><div class="seg" id="periods"></div></div>
   <div class="row">
@@ -839,7 +930,82 @@ function dvCell(s){
   return `<span class="chip ${d.st}">${lab}</span> <small class="na">${fmt(d.b)}–${fmt(d.t)}</small>`;
 }
 
-function detail(s){
+// ---------- charts
+const LWC_URL = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js";
+let lwcPromise = null, pending = [], live = {scan:[], pf:[]}, chartSeq = 0;
+const chartData = new Map();
+function loadLib(){
+  if (window.LightweightCharts) return Promise.resolve();
+  if (!lwcPromise) lwcPromise = new Promise((res, rej) => {
+    const sc = document.createElement("script"); sc.src = LWC_URL; sc.onload = res;
+    sc.onerror = () => { lwcPromise = null; rej(new Error("chart library load nahi hui")); };
+    document.head.appendChild(sc);
+  });
+  return lwcPromise;
+}
+function getCandles(k){
+  if (!chartData.has(k)) chartData.set(k, fetch(`c/${k}.json`).then(r => { if (!r.ok) throw new Error("chart data nahi mila"); return r.json(); })
+    .catch(e => { chartData.delete(k); throw e; }));
+  return chartData.get(k);
+}
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const dayStr = n => new Date(n*864e5).toISOString().slice(0,10);
+function tvUrl(s){ return `https://www.tradingview.com/chart/?symbol=${s.x==="B"?"BSE":"NSE"}%3A${encodeURIComponent(s.s)}`; }
+function chartHtml(s, ctx, view){
+  const id = "ch" + (++chartSeq);
+  pending.push({id, s, ctx, view: view || "scan"});
+  const leg = [`<span><i style="border-color:${"#2962ff"}"></i>Darvas box</span>`, `<span><i class="dash" style="border-color:#e08a00"></i>52W high</span>`];
+  if (ctx && ctx.avg) leg.push(`<span><i class="dash" style="border-color:#888"></i>Avg</span>`, `<span><i class="dash" style="border-color:#e53935"></i>Stop</span>`, `<span><i class="dash" style="border-color:#2e9e5b"></i>Target</span>`);
+  return `<div class="chartbox"><div class="chart" id="${id}"><div class="hint" style="padding:12px">Chart load ho raha hai…</div></div>
+    <div class="chartbar"><span>${leg.join(" ")}</span><a href="${tvUrl(s)}" target="_blank" rel="noopener">TradingView par kholo ↗</a></div></div>`;
+}
+function mountCharts(){
+  const jobs = pending; pending = [];
+  jobs.forEach(job => {
+    Promise.all([loadLib(), getCandles(job.s.k)]).then(([, data]) => {
+      const el = document.getElementById(job.id);
+      if (!el) return;
+      el.innerHTML = "";
+      live[job.view].push(drawChart(el, job.s, data, job.ctx));
+    }).catch(e => { const el = document.getElementById(job.id); if (el) el.innerHTML = `<div class="err" style="padding:12px">${esc(e.message)}</div>`; });
+  });
+}
+function clearCharts(view){ live[view].forEach(c => { try { c.remove(); } catch(e){} }); live[view] = []; }
+function drawChart(el, s, D2, ctx){
+  const L = window.LightweightCharts, line = css("--line"), mute = css("--mute");
+  const up = css("--up"), dn = css("--dn");
+  const chart = L.createChart(el, {autoSize:true, layout:{background:{type:"solid", color:css("--card")}, textColor:mute, fontSize:11},
+    grid:{vertLines:{color:line}, horzLines:{color:line}}, rightPriceScale:{borderColor:line}, timeScale:{borderColor:line},
+    crosshair:{mode:0}, handleScroll:true, handleScale:true,
+    localization:{locale:"en-IN", dateFormat:"dd MMM 'yy", priceFormatter:p => Number(p).toFixed(2)}});
+  const n = D2.d.length;
+  const cs = chart.addCandlestickSeries({upColor:up, downColor:dn, wickUpColor:up, wickDownColor:dn, borderVisible:false, priceLineVisible:false});
+  cs.setData(D2.d.map((t,i) => ({time:dayStr(t), open:D2.o[i], high:D2.h[i], low:D2.l[i], close:D2.c[i]})));
+  cs.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.24}});
+  const vs = chart.addHistogramSeries({priceFormat:{type:"volume"}, priceScaleId:"", lastValueVisible:false, priceLineVisible:false});
+  vs.priceScale().applyOptions({scaleMargins:{top:0.8, bottom:0}});
+  vs.setData(D2.d.map((t,i) => ({time:dayStr(t), value:D2.v[i], color:(D2.c[i]>=D2.o[i]?up:dn)+"66"})));
+  const pl = (price, color, title, style=2) => price && cs.createPriceLine({price, color, lineWidth:1, lineStyle:style, axisLabelVisible:true, title});
+  pl(s.h52, "#e08a00", "52W high");
+  const dv = s.dv;
+  if (dv && (dv.st==="box" || dv.st==="bo") && dv.s!=null) {
+    const a = Math.max(0, n-1-dv.s), b = dv.st==="bo" ? n-2 : n-1;
+    if (b > a) [dv.t, dv.b].forEach(p => {
+      const ls = chart.addLineSeries({color:"#2962ff", lineWidth:2, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false});
+      ls.setData([{time:dayStr(D2.d[a]), value:p}, {time:dayStr(D2.d[b]), value:p}]);
+    });
+  }
+  if (ctx && ctx.avg) {
+    pl(ctx.avg, "#888888", "Avg"); pl(ctx.avg*0.9, "#e53935", "Stop"); pl(ctx.avg*1.2, "#2e9e5b", "Target");
+    const lo = ctx.avg*0.9, hi = ctx.avg*1.2;
+    cs.applyOptions({autoscaleInfoProvider: orig => { const r = orig(); if (r && r.priceRange) {
+      r.priceRange.minValue = Math.min(r.priceRange.minValue, lo); r.priceRange.maxValue = Math.max(r.priceRange.maxValue, hi); } return r; }});
+  }
+  chart.timeScale().setVisibleLogicalRange({from:Math.max(0, n-130), to:n+3});
+  return chart;
+}
+
+function detail(s, ctx, cols, view){
   const d = s.dv || {};
   const items = [];
   const add = (k,v) => items.push(`<div><span>${k}</span><b>${v}</b></div>`);
@@ -851,16 +1017,18 @@ function detail(s){
     add("Box age", `${d.d} sessions`);
     add("Risk to box bottom", `${fmt((s.c-d.b)/s.c*100,1)}%`);
   } else add("Darvas box", d.st==="form" ? "Box still forming" : "Not enough history");
-  add("10% stop · 20% target", `₹${fmt(s.c*0.9)} · ₹${fmt(s.c*1.2)}`);
+  if (ctx && ctx.avg) add("Aapka stop · target", `₹${fmt(ctx.avg*0.9)} · ₹${fmt(ctx.avg*1.2)} (avg ₹${fmt(ctx.avg)} se)`);
+  else add("10% stop · 20% target", `₹${fmt(s.c*0.9)} · ₹${fmt(s.c*1.2)}`);
   if (s.ipo!=null) add("Listed", `${s.ipo} sessions ago${s.ib?" · at high since listing":""}`);
   const ch = M.periods.map(([k])=>`${k} ${sgn(s.ch[k])}`).join(" · ");
   add("Returns", ch);
   if (memberOf[s.s] && s.x==="N") add("Indices", esc(memberOf[s.s].join(", ")));
-  return `<tr class="det"><td colspan="${COLS.length}"><div class="dgrid">${items.join("")}</div></td></tr>`;
+  return `<tr class="det"><td colspan="${cols||COLS.length}"><div class="dgrid">${items.join("")}</div>${chartHtml(s, ctx, view)}</td></tr>`;
 }
 
 let current = [];
 function render(){
+  clearCharts("scan");
   document.querySelectorAll("#periods button").forEach(b => b.classList.toggle("on", b.dataset.k===st.period));
   $("sortsel").value = st.sort; $("setup").value = st.setup;
   $("hint").textContent = SETUP[st.setup][3];
@@ -902,6 +1070,8 @@ function render(){
     if (s.seg==="NSE" && s.sr!=="EQ") tags += `<span class="tag">${esc(s.sr)}</span>`;
     if (s.nh) tags += ` <span class="chip nh">52W high</span>`;
     if (s.dv && s.dv.st==="bo") tags += ` <span class="chip bo">Breakout</span>`;
+    const held = HELD.get(s.k);
+    if (held) tags += ` <span class="chip hold">Holding</span>`;
     const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
       <td>${fmt(s.c)}</td>
       <td><span class="pill ${cls}">${sgn(c)}</span></td>
@@ -910,13 +1080,14 @@ function render(){
       <td class="l hide-m">${dvCell(s)}</td>
       <td class="hide-m">${fmt(s.tv)}</td>
       <td class="l hide-m">${esc(s.sec)||"—"}</td></tr>`;
-    return main + (open.has(id) ? detail(s) : "");
+    return main + (open.has(id) ? detail(s, held, COLS.length, "scan") : "");
   }).join("") || `<tr><td colspan="${COLS.length}" class="l na" style="padding:24px">No stocks match these filters.</td></tr>`;
   document.querySelectorAll("#body tr.r").forEach(tr => tr.onclick = () => {
     const id = tr.dataset.id; open.has(id) ? open.delete(id) : open.add(id); render();
   });
   $("pinfo").textContent = current.length ? `Showing ${st.page*PAGE+1}–${Math.min((st.page+1)*PAGE,current.length)} of ${fmtInt(current.length)} · tap a stock for details` : "";
   $("prev").disabled = st.page===0; $("next").disabled = st.page>=pages-1;
+  mountCharts();
 }
 
 const bind = (id, key, conv) => $(id).addEventListener("input", e => { st[key] = conv(e.target); st.page = 0; render(); });
@@ -938,8 +1109,206 @@ $("csv").onclick = () => {
   a.href = URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/csv"}));
   a.download = `scan_${st.setup}_${st.period}_${M.asOf.replace(/ /g,"")}.csv`; a.click();
 };
-$("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
+
+// ---------- portfolio (data lives only in this browser)
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+};
+const BYK = new Map(S.map(s => [s.k, s])), BYISIN = new Map(), BYSYM = new Map();
+S.forEach(s => { if (s.i) BYISIN.set(s.i, s); BYSYM.set(s.x+":"+s.s.toUpperCase(), s); if (!BYSYM.has("*:"+s.s.toUpperCase())) BYSYM.set("*:"+s.s.toUpperCase(), s); });
+let HELD = new Map(), PF = null, pfOpen = new Set();
+
+function parseCSV(t){
+  const rows = []; let row = [], f = "", q = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (q) { if (ch === '"') { if (t[i+1] === '"') { f += '"'; i++; } else q = false; } else f += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(f); f = ""; }
+    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && t[i+1] === "\n") i++; row.push(f); rows.push(row); row = []; f = ""; }
+    else f += ch;
+  }
+  if (f !== "" || row.length) { row.push(f); rows.push(row); }
+  return rows;
+}
+const pnum = v => { if (v == null) return null; const x = parseFloat(String(v).replace(/[₹,\s%]/g, "")); return isNaN(x) ? null : x; };
+const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function pdate(v){
+  v = String(v||"").trim(); let m;
+  if ((m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) return Date.UTC(+m[1], +m[2]-1, +m[3]);
+  if ((m = v.match(/^(\d{1,2})[ -]([A-Za-z]{3})[a-z]*[ -,]*(\d{4})/)) && MON[m[2].toLowerCase()]!=null) return Date.UTC(+m[3], MON[m[2].toLowerCase()], +m[1]);
+  if ((m = v.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})/))) return Date.UTC(+m[3], +m[2]-1, +m[1]);
+  return null;
+}
+const fdate = ms => ms==null ? "—" : new Date(ms).toLocaleDateString("en-IN", {day:"numeric", month:"short", year:"numeric", timeZone:"UTC"});
+function sheetCsvUrl(u){
+  u = (u||"").trim();
+  if (!u) return "";
+  if (/\/spreadsheets\/d\/e\//.test(u)) {               // "Publish to web" link
+    u = u.replace(/\/pubhtml.*$/, "/pub?output=csv");
+    if (!/output=csv/.test(u)) u += (u.includes("?") ? "&" : "?") + "output=csv";
+    return u;
+  }
+  const m = u.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);  // normal link (needs "anyone with the link")
+  if (m) return `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv&headers=0&sheet=Holdings`;
+  return u;
+}
+function matchStock(r){
+  if (r.isin && BYISIN.has(r.isin)) return BYISIN.get(r.isin);
+  const sym = (r.sym||"").toUpperCase().replace(/-(BE|ST|SM|BZ)$/, "");
+  const x = (r.exch||"").toUpperCase().startsWith("B") ? "B" : "N";
+  return BYSYM.get(x+":"+sym) || BYSYM.get((x==="B"?"N":"B")+":"+sym) || BYSYM.get("*:"+sym) || null;
+}
+function readSheet(rows){
+  let synced = "", h = -1;
+  rows.forEach((r, i) => {
+    const a = (r[0]||"").trim().toLowerCase();
+    if (a.startsWith("last synced")) synced = (r[1]||"").trim();
+    if (h < 0 && a === "symbol") h = i;
+  });
+  if (h < 0) throw new Error("Sheet mein 'Symbol' wali heading nahi mili. Kya sahi tab (Holdings) publish kiya hai?");
+  const H = rows[h].map(x => x.trim().toLowerCase());
+  const col = (...names) => H.findIndex(x => names.some(n => x.startsWith(n)));
+  const C = {sym:col("symbol"), exch:col("exchange"), seg:col("segment"), qty:col("quantity"), avg:col("avg price"),
+             notes:col("notes"), isin:col("isin"), max:col("max qty"), status:col("status"), first:col("first"),
+             xdate:col("exit date"), xpx:col("exit price"), sold:col("sold qty")};
+  const g = (r, k) => C[k] >= 0 ? (r[C[k]]||"").trim() : "";
+  const out = [];
+  rows.slice(h+1).forEach(r => {
+    const sym = g(r, "sym"); if (!sym) return;
+    const qty = pnum(g(r, "qty")) || 0, avg = pnum(g(r, "avg")), maxq = Math.max(pnum(g(r, "max")) || 0, qty);
+    let sold = pnum(g(r, "sold")); if (sold == null) sold = Math.max(0, maxq - qty);
+    let status = g(r, "status");
+    if (!/hold|partial|exit/i.test(status)) status = qty <= 0 ? "Exited" : (sold > 0 ? "Partial exit" : "Holding");
+    const row = {sym, exch:g(r,"exch"), seg:g(r,"seg"), qty, avg, maxq, sold, status, notes:g(r,"notes"), isin:g(r,"isin").toUpperCase(),
+                 xdate:pdate(g(r,"xdate")), xpx:pnum(g(r,"xpx")), xpxSrc:pnum(g(r,"xpx"))!=null ? "sheet" : null};
+    row.s = matchStock(row);
+    out.push(row);
+  });
+  return {rows: out, synced};
+}
+async function fillExitPrices(){
+  const need = PF.rows.filter(r => r.sold > 0 && r.xpx == null && r.s);
+  await Promise.all(need.map(async r => {
+    if (r.xdate != null) {
+      try {
+        const d = await getCandles(r.s.k), day = Math.floor(r.xdate/864e5);
+        let i = -1; for (let j = 0; j < d.d.length; j++) if (d.d[j] <= day) i = j;
+        if (i >= 0) { r.xpx = d.c[i]; r.xpxSrc = "close"; return; }
+      } catch(e){}
+    }
+    r.xpx = r.s.c; r.xpxSrc = "today";
+  }));
+}
+async function loadPortfolio(){
+  const url = store.get("pf_url");
+  $("pfurl").value = url || "";
+  $("pfhelp").hidden = !!url;
+  if (!url) { PF = null; HELD = new Map(); renderPf(); return; }
+  $("pferr").textContent = "Portfolio load ho raha hai…";
+  try {
+    const r = await fetch(sheetCsvUrl(url), {cache:"no-store"});
+    if (!r.ok) throw new Error("Sheet nahi khul rahi (" + r.status + "). Link check karo.");
+    const text = await r.text();
+    if (/^\s*</.test(text)) throw new Error("Sheet CSV ki jagah web page de rahi hai. 'Publish to web' mein CSV chuno.");
+    PF = readSheet(parseCSV(text));
+    await fillExitPrices();
+    HELD = new Map(PF.rows.filter(r => r.qty > 0 && r.s).map(r => [r.s.k, {avg:r.avg, qty:r.qty}]));
+    $("pferr").textContent = "";
+  } catch(e) {
+    PF = null; HELD = new Map();
+    $("pferr").textContent = (e && e.message && !/fetch/i.test(e.message)) ? e.message : "Sheet load nahi hui. Internet aur link check karo.";
+  }
+  renderPf(); render();
+}
+function flag(r){
+  if (!r.s || !r.avg || r.qty <= 0) return "";
+  const c = r.s.c, stop = r.avg*0.9, tgt = r.avg*1.2;
+  if (c < stop) return ` <span class="chip warn">Stop toota</span>`;
+  if (c < stop*1.03) return ` <span class="chip warn">Stop ke paas</span>`;
+  if (c >= tgt) return ` <span class="chip tgt">Target</span>`;
+  return "";
+}
+const stChip = st => /exit/i.test(st) && !/partial/i.test(st) ? `<span class="chip exit">Exited</span>` : /partial/i.test(st) ? `<span class="chip part">Partial exit</span>` : `<span class="chip hold">Holding</span>`;
+const rupee = (n, d=0) => n==null ? "—" : (n<0?"-":"") + "₹" + fmt(Math.abs(n), d);
+function renderPf(){
+  clearCharts("pf");
+  const has = !!(PF && PF.rows.length);
+  ["pfholdbox"].forEach(id => $(id).hidden = !has);
+  if (!PF) { $("pfstats").innerHTML = ""; $("pfxtitle").hidden = $("pfexitbox").hidden = true; $("pffoot").textContent = ""; return; }
+  const hold = PF.rows.filter(r => r.qty > 0), exits = PF.rows.filter(r => r.sold > 0);
+  let inv = 0, val = 0, day = 0, realised = 0, missing = 0;
+  hold.forEach(r => {
+    if (!r.s) { missing++; return; }
+    const c = r.s.c, d1 = r.s.ch["1D"];
+    val += r.qty*c; if (r.avg) inv += r.qty*r.avg;
+    if (d1 != null) day += r.qty * (c - c/(1+d1/100));
+  });
+  exits.forEach(r => { if (r.avg && r.xpx != null) realised += r.sold*(r.xpx - r.avg); });
+  const invMatched = hold.filter(r => r.s && r.avg).reduce((a,r)=>a+r.qty*r.avg, 0);
+  const valMatched = hold.filter(r => r.s && r.avg).reduce((a,r)=>a+r.qty*r.s.c, 0);
+  const pnl = valMatched - invMatched, pc = invMatched ? pnl/invMatched*100 : null;
+  const cl = n => n>0 ? "var(--up)" : n<0 ? "var(--dn)" : "inherit";
+  $("pfstats").innerHTML = `
+    <div class="stat"><b>${rupee(val)}</b><span>current value (approx)</span></div>
+    <div class="stat"><b>${rupee(inv)}</b><span>invested</span></div>
+    <div class="stat"><b style="color:${cl(pnl)}">${rupee(pnl)}</b><span>P&amp;L ${pc==null?"":"("+sgn(pc)+")"}</span></div>
+    <div class="stat"><b style="color:${cl(day)}">${rupee(day)}</b><span>aaj ka change</span></div>
+    <div class="stat"><b style="color:${cl(realised)}">${rupee(realised)}</b><span>beche hue ka P&amp;L (approx)</span></div>
+    <div class="stat"><b>${hold.length}</b><span>stocks held${exits.length?` · ${exits.filter(r=>r.qty<=0).length} exited`:""}</span></div>`;
+
+  $("pfhead").innerHTML = `<th class="l">Stock</th><th>Close ₹</th><th>Value ₹</th><th>P&amp;L</th><th class="hide-m">Stop · Target ₹</th><th class="l hide-m">Darvas</th>`;
+  const NC = 6;
+  hold.sort((a,b) => (b.s ? b.qty*b.s.c : 0) - (a.s ? a.qty*a.s.c : 0));
+  $("pfbody").innerHTML = hold.map((r, i) => {
+    const s = r.s, id = "h:" + r.sym + ":" + r.exch;
+    const name = `<b>${esc(r.sym)}</b> ${stChip(r.status)}${flag(r)}<small class="sub2">${fmtInt(r.qty)} @ ${r.avg?"₹"+fmt(r.avg):"avg nahi"}${s?" · "+esc(s.n):""}</small>`;
+    if (!s) return `<tr><td class="l sym">${name}</td><td colspan="${NC-1}" class="l na">Scanner data mein nahi mila</td></tr>`;
+    const d1 = s.ch["1D"], v = r.qty*s.c, pl = r.avg ? v - r.qty*r.avg : null, pp = r.avg ? (s.c/r.avg-1)*100 : null;
+    const pcls = pp==null ? "na" : pp>0 ? "up" : pp<0 ? "dn" : "na";
+    const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym">${name}</td>
+      <td>${fmt(s.c)}<small class="sub2" style="color:${cl(d1)}">${sgn(d1)}</small></td>
+      <td>${fmt(v,0)}</td>
+      <td><span class="pill ${pcls}">${sgn(pp)}</span><small class="sub2">${rupee(pl)}</small></td>
+      <td class="hide-m">${r.avg ? fmt(r.avg*0.9)+" · "+fmt(r.avg*1.2) : "—"}</td>
+      <td class="l hide-m">${dvCell(s)}</td></tr>`;
+    return main + (pfOpen.has(id) ? detail(s, {avg:r.avg, qty:r.qty}, NC, "pf") : "");
+  }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">Abhi koi holding nahi.</td></tr>`;
+
+  $("pfxtitle").hidden = $("pfexitbox").hidden = !exits.length;
+  $("pfxhead").innerHTML = `<th class="l">Stock</th><th>Becha qty</th><th>Exit ₹ (approx)</th><th class="hide-m">Exit value ₹</th><th>P&amp;L</th>`;
+  exits.sort((a,b) => (b.xdate||0) - (a.xdate||0));
+  $("pfxbody").innerHTML = exits.map(r => {
+    const s = r.s, id = "x:" + r.sym + ":" + r.exch;
+    const pl = (r.avg && r.xpx!=null) ? r.sold*(r.xpx - r.avg) : null, pp = (r.avg && r.xpx!=null) ? (r.xpx/r.avg-1)*100 : null;
+    const pcls = pp==null ? "na" : pp>0 ? "up" : pp<0 ? "dn" : "na";
+    const src = r.xpxSrc==="close" ? "us din ka close" : r.xpxSrc==="today" ? "aaj ka price" : "sheet se";
+    const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(r.sym)}</b> ${stChip(r.qty<=0?"Exited":"Partial exit")}<small class="sub2">${r.xdate!=null?fdate(r.xdate):"date nahi"} · avg ${r.avg?"₹"+fmt(r.avg):"—"}</small></td>
+      <td>${fmtInt(r.sold)}<small class="sub2">${r.xpx==null?"":"₹"+fmt(r.sold*r.xpx,0)}</small></td>
+      <td>${r.xpx==null?"—":fmt(r.xpx)}<small class="sub2">${src}</small></td>
+      <td class="hide-m">${r.xpx==null?"—":fmt(r.sold*r.xpx,0)}</td>
+      <td><span class="pill ${pcls}">${sgn(pp)}</span><small class="sub2">${rupee(pl)}</small></td></tr>`;
+    return main + (s && pfOpen.has(id) ? detail(s, {avg:r.avg}, 5, "pf") : "");
+  }).join("");
+
+  document.querySelectorAll("#pfbody tr.r, #pfxbody tr.r").forEach(tr => tr.onclick = () => {
+    const id = tr.dataset.id; pfOpen.has(id) ? pfOpen.delete(id) : pfOpen.add(id); renderPf();
+  });
+  $("pffoot").innerHTML = `Holdings sheet: last synced ${esc(PF.synced||"—")}. Prices: ${esc(M.asOf)} ka close (live nahi). ${missing?missing+" holding(s) scanner data mein nahi mile. ":""}Exit price approx hai jab tak sheet mein asli price na ho. Not investment advice.`;
+  mountCharts();
+}
+$("pfsave").onclick = () => { store.set("pf_url", $("pfurl").value.trim()); loadPortfolio(); };
+function showView(v){
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
+  $("v-scan").hidden = v!=="scan"; $("v-pf").hidden = v!=="pf";
+  store.set("view", v);
+}
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
+$("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
 render();
+showView(store.get("view")==="pf" ? "pf" : "scan");
+loadPortfolio();
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
