@@ -655,7 +655,7 @@ def write_csv(stocks, index_members, meta):
 ICON_192 = "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAAENklEQVR4nO3dS27bSABF0XIj+1BmXo57mt14N5l6Oe6Zs5MeCBCESLJpPrJ+PGeUODJFoC6qyNInT6eX9wJr/dP6BBibgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAhoYKfX361PQUDDOtfTvCEBDem6m7YNCWg8t8U0bEhAg7nbyp/XX/XP5ExAw2tYTxHQWG6nn7b1FAENpMN6ioBG0fx2/REBDaC3C+drAupdz/UUAXWu83qKgHrWfz1FQGPprZ4ioG71edN+S0A9GqWeIqAOdbvlc9fT6eW99TmwMpoepiUBtRdOOV5MPbR8wfKGMgYmICICIiIgIgJqaawtn7sE1MwE9RQBtTJHPUVATUxTTxFQfTPVUwRU2WT1FAERElA9A73LZzkBVTJlPUVAdcx36XMhoN0N8eGK1QS0r7nrKQLa1fT1lFJ+tD6BjV2PWduhOkI9ZbKA/hqzy1/rD9tB6inTBPT5bc75X9uO35T1lDkCWniTXG1CmnXL567hL6JXbLGcXn/vtzFzqHrK0DNQGMEeE9LEG4aPjBrQJ0N1CaLy0nacC+drQy5hS+o5//lb45csbcesp4w4Ay2s5/aH+01Ih62njBXQd9O5+5jlc8zCko5cTxkooLCe2wd/t6Tlz3KcesooAW1Vz91fTJa2o9203+o9oM9Hd5PRWre0/Xn9pZ7SeUB7TDxfHvC7E9LB9RvQl/V8vD2vOOzPf//7/AErLpL++sVD6TGgJcvWunouv/hlRuWbS9sx6ykdBrRk2Vpdz8XH2/OShsqyCemw9ZTedqJ7HqRH+9rNT6ytXmagCndbm7iekPo5q4a6CKjnieeRbk+ssvZL2Ij1cNE4IPWMrtkSJp05tJmB1DONBgGpZyZVl7BR7tVZrl5AJp4p1VvCHlWinqFVXcJu30PTfz07veY/jWa38f2nU6q85j+62ndh527mrmfDI/SvwW38EPWwUPvXwhiagIgIiIiAiAiIiICICIiIgIjs8lLG6h3YI+z9T2b7GSjZv/94ez7C9v9MNg5ok+HX0EBcAxEREBEBEREQEQERERARAREREBEBEREQEQERERARAREREBEBEREQEQERERARAREREBEBEdk4oE0+2PXlQfJnWXKEOs+Sf91W2y/sMgMReTq9vG9+0DqfTK3z/al1nmXdf+Hbw5cF7hIQx2EJIyIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAi/wMGelvdl+PwXwAAAABJRU5ErkJggg=="
 ICON_512 = "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"
 MANIFEST = '{\n  "name": "NSE Stock Scanner",\n  "short_name": "NSE Scanner",\n  "start_url": "./",\n  "scope": "./",\n  "display": "standalone",\n  "background_color": "#f6f7f9",\n  "theme_color": "#1f4fd8",\n  "icons": [\n    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},\n    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},\n    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}\n  ]\n}\n'
-SERVICE_WORKER = '// Network-first: always try to get today\'s data, fall back to the last copy when offline.\nconst CACHE = "nse-scanner-v2";\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", e => {\n  if (e.request.method !== "GET") return;\n  e.respondWith(\n    fetch(e.request, {cache: "no-store"})\n      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })\n      .catch(() => caches.match(e.request))\n  );\n});\n'
+SERVICE_WORKER = '// Network-first: always try to get today\'s data, fall back to the last copy when offline.\nconst CACHE = "nse-scanner-v3";\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", e => {\n  if (e.request.method !== "GET") return;\n  e.respondWith(\n    fetch(e.request, {cache: "no-store"})\n      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })\n      .catch(() => caches.match(e.request))\n  );\n});\n'
 
 
 def write_app_files(folder):
@@ -741,7 +741,18 @@ tr.det td{background:var(--bg);text-align:left;white-space:normal;padding:12px}
 .tabs button.on{background:var(--acc);border-color:var(--acc);color:#fff}
 [hidden]{display:none!important}
 .chartbox{margin-top:12px;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.chart{height:320px;width:100%}
+.chart{height:320px;width:100%;display:flex;flex-direction:column}
+.chart .pmain{flex:1;min-height:0}.chart .prsi{height:90px;border-top:1px solid var(--line)}.chart.withrsi{height:410px}
+.indbar{display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px;border-bottom:1px solid var(--line)}
+button.ind{border:1px solid var(--line);background:var(--card);color:var(--mute);border-radius:14px;padding:3px 9px;font:inherit;font-size:11px;cursor:pointer}
+button.ind i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;opacity:.35}
+button.ind.on{color:var(--ink);border-color:var(--ink)} button.ind.on i{opacity:1}
+.cbtns{display:flex;gap:10px;align-items:center}.btn.sm{padding:4px 10px;font-size:12px}
+#fs{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;flex-direction:column}
+#fs .fshead{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--card);border-bottom:1px solid var(--line)}
+#fs .fshead a{color:var(--acc);font-weight:600;text-decoration:none;font-size:13px}
+#fschart{flex:1;min-height:0;background:var(--card)}#fschart .chart.withrsi{height:100%}
+#fs .chartbar{background:var(--card)}
 .chartbar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;justify-content:space-between;padding:8px 10px;font-size:11px;color:var(--mute);border-top:1px solid var(--line)}
 .chartbar i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:4px}
 .chartbar i.dash{border-top-style:dashed}
@@ -753,8 +764,9 @@ h3.sec{font-size:15px;margin:18px 0 8px}
 .steps{margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.6}
 .err{color:var(--dn);font-size:13px;margin-top:8px}
 input.url{flex:1;min-width:200px}
-@media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .stat b{font-size:16px} .stat{min-width:96px}}
+@media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .chart.withrsi{height:350px} .stat b{font-size:16px} .stat{min-width:96px}}
 </style></head><body>
+<div id="fs" hidden><div class="fshead"><span id="fsname"></span><span class="cbtns"><a id="fsnew" target="_blank" rel="noopener">Naye tab mein ↗</a><a id="fstv" target="_blank" rel="noopener">TradingView ↗</a><button class="btn sm" id="fsclose">✕ Band karo</button></span></div><div class="indbar" id="fsind"></div><div id="fschart"></div><div class="chartbar"><span id="fsleg"></span></div></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
 <nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="pf">Mera Portfolio</button></nav></header>
@@ -932,8 +944,11 @@ function dvCell(s){
 
 // ---------- charts
 const LWC_URL = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js";
-let lwcPromise = null, pending = [], live = {scan:[], pf:[]}, chartSeq = 0;
+let lwcPromise = null, pending = [], live = {scan:[], pf:[], fs:[]}, chartSeq = 0;
 const chartData = new Map();
+const IND_DEF = [["ema20","20 EMA","#7c4dff"],["dma50","50 DMA","#00897b"],["dma200","200 DMA","#ef6c00"],["vol50","Vol avg","#5c6bc0"],["rsi","RSI 14","#8e24aa"],["boxes","Darvas boxes","#2962ff"]];
+let IND = {ema20:true, dma50:true, dma200:false, vol50:false, rsi:false, boxes:true};
+try { const saved = JSON.parse(localStorage.getItem("ind") || "null"); if (saved) IND = Object.assign(IND, saved); } catch(e){}
 function loadLib(){
   if (window.LightweightCharts) return Promise.resolve();
   if (!lwcPromise) lwcPromise = new Promise((res, rej) => {
@@ -951,13 +966,21 @@ function getCandles(k){
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const dayStr = n => new Date(n*864e5).toISOString().slice(0,10);
 function tvUrl(s){ return `https://www.tradingview.com/chart/?symbol=${s.x==="B"?"BSE":"NSE"}%3A${encodeURIComponent(s.s)}`; }
+function indChips(){
+  return IND_DEF.map(([k,t,c]) => `<button class="ind${IND[k]?" on":""}" data-ind="${k}"><i style="background:${c}"></i>${t}</button>`).join("");
+}
 function chartHtml(s, ctx, view){
   const id = "ch" + (++chartSeq);
   pending.push({id, s, ctx, view: view || "scan"});
-  const leg = [`<span><i style="border-color:${"#2962ff"}"></i>Darvas box</span>`, `<span><i class="dash" style="border-color:#e08a00"></i>52W high</span>`];
-  if (ctx && ctx.avg) leg.push(`<span><i class="dash" style="border-color:#888"></i>Avg</span>`, `<span><i class="dash" style="border-color:#e53935"></i>Stop</span>`, `<span><i class="dash" style="border-color:#2e9e5b"></i>Target</span>`);
-  return `<div class="chartbox"><div class="chart" id="${id}"><div class="hint" style="padding:12px">Chart load ho raha hai…</div></div>
-    <div class="chartbar"><span>${leg.join(" ")}</span><a href="${tvUrl(s)}" target="_blank" rel="noopener">TradingView par kholo ↗</a></div></div>`;
+  return `<div class="chartbox"><div class="indbar">${indChips()}</div>
+    <div class="chart" id="${id}"><div class="hint" style="padding:12px">Chart load ho raha hai…</div></div>
+    <div class="chartbar"><span>${legend(ctx)}</span><span class="cbtns"><button class="btn sm" data-fs="${esc(s.k)}">⛶ Bada chart</button><a href="${tvUrl(s)}" target="_blank" rel="noopener">TradingView ↗</a></span></div></div>`;
+}
+function legend(ctx){
+  const l = [`<span><i class="dash" style="border-color:#e08a00"></i>52W high</span>`];
+  if (IND.boxes) l.push(`<span><i style="border-color:#2e9e5b"></i>box upar tuta</span>`, `<span><i style="border-color:#e53935"></i>neeche tuta</span>`, `<span><i style="border-color:#2962ff"></i>abhi ka box</span>`);
+  if (ctx && ctx.avg) l.push(`<span><i class="dash" style="border-color:#888"></i>Avg</span>`, `<span><i class="dash" style="border-color:#e53935"></i>Stop</span>`, `<span><i class="dash" style="border-color:#2e9e5b"></i>Target</span>`);
+  return l.join(" ");
 }
 function mountCharts(){
   const jobs = pending; pending = [];
@@ -965,34 +988,102 @@ function mountCharts(){
     Promise.all([loadLib(), getCandles(job.s.k)]).then(([, data]) => {
       const el = document.getElementById(job.id);
       if (!el) return;
-      el.innerHTML = "";
-      live[job.view].push(drawChart(el, job.s, data, job.ctx));
+      const entry = {el, s:job.s, data, ctx:job.ctx};
+      drawInto(entry);
+      live[job.view].push(entry);
     }).catch(e => { const el = document.getElementById(job.id); if (el) el.innerHTML = `<div class="err" style="padding:12px">${esc(e.message)}</div>`; });
   });
 }
-function clearCharts(view){ live[view].forEach(c => { try { c.remove(); } catch(e){} }); live[view] = []; }
-function drawChart(el, s, D2, ctx){
-  const L = window.LightweightCharts, line = css("--line"), mute = css("--mute");
-  const up = css("--up"), dn = css("--dn");
-  const chart = L.createChart(el, {autoSize:true, layout:{background:{type:"solid", color:css("--card")}, textColor:mute, fontSize:11},
-    grid:{vertLines:{color:line}, horzLines:{color:line}}, rightPriceScale:{borderColor:line}, timeScale:{borderColor:line},
-    crosshair:{mode:0}, handleScroll:true, handleScale:true,
-    localization:{locale:"en-IN", dateFormat:"dd MMM 'yy", priceFormatter:p => Number(p).toFixed(2)}});
-  const n = D2.d.length;
+function destroy(entry){ (entry.charts||[]).forEach(c => { try { c.remove(); } catch(e){} }); entry.charts = []; }
+function clearCharts(view){ live[view].forEach(destroy); live[view] = []; }
+function drawInto(entry){
+  destroy(entry);
+  entry.el.innerHTML = "";
+  const main = document.createElement("div"); main.className = "pmain"; entry.el.appendChild(main);
+  let rsiEl = null;
+  if (IND.rsi) { rsiEl = document.createElement("div"); rsiEl.className = "prsi"; entry.el.appendChild(rsiEl); }
+  entry.el.classList.toggle("withrsi", !!IND.rsi);
+  entry.charts = drawChart(main, rsiEl, entry.s, entry.data, entry.ctx);
+}
+function redrawAll(){
+  Object.values(live).forEach(list => list.forEach(drawInto));
+  document.querySelectorAll(".indbar").forEach(b => b.innerHTML = indChips());
+  document.querySelectorAll(".chartbar > span:first-child").forEach((sp) => {
+    const box = sp.closest(".chartbox, #fs"); const entry = Object.values(live).flat().find(e => box && box.contains(e.el));
+    sp.innerHTML = legend(entry && entry.ctx);
+  });
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("button.ind");
+  if (b) { e.stopPropagation(); IND[b.dataset.ind] = !IND[b.dataset.ind]; try { localStorage.setItem("ind", JSON.stringify(IND)); } catch(_){} redrawAll(); return; }
+  const f = e.target.closest("button[data-fs]");
+  if (f) { e.stopPropagation(); openFull(f.dataset.fs); }
+}, true);
+
+// indicator maths
+function sma(a, n){ const o = new Array(a.length).fill(null); let s = 0; for (let i = 0; i < a.length; i++){ s += a[i]; if (i >= n) s -= a[i-n]; if (i >= n-1) o[i] = s/n; } return o; }
+function ema(a, n){ const o = new Array(a.length).fill(null); const k = 2/(n+1); let e = null;
+  for (let i = 0; i < a.length; i++){ if (i === n-1){ let s = 0; for (let j = 0; j < n; j++) s += a[j]; e = s/n; o[i] = e; } else if (i >= n){ e = a[i]*k + e*(1-k); o[i] = e; } } return o; }
+function rsi(c, n=14){ const o = new Array(c.length).fill(null); let g = 0, l = 0;
+  for (let i = 1; i < c.length; i++){ const d = c[i]-c[i-1], up = Math.max(d,0), dn = Math.max(-d,0);
+    if (i <= n){ g += up; l += dn; if (i === n){ g /= n; l /= n; o[i] = l === 0 ? 100 : 100 - 100/(1+g/l); } }
+    else { g = (g*(n-1)+up)/n; l = (l*(n-1)+dn)/n; o[i] = l === 0 ? 100 : 100 - 100/(1+g/l); } }
+  return o; }
+// every Darvas box in the history: top holds 3 sessions, then bottom holds 3 sessions
+function darvasBoxes(H, L, C){
+  const out = []; const n = H.length; if (n < 8) return out;
+  let state = 0, top = H[0], ti = 0, cnt = 0, bot = 0, bcnt = 0, box = null;
+  for (let i = 1; i < n; i++){
+    const h = H[i], l = L[i], c = C[i];
+    if (state === 2){
+      if (c > box.t){ box.e = i; box.r = "up"; out.push(box); box = null; state = 0; top = h; ti = i; cnt = 0; }
+      else if (c < box.b){ box.e = i; box.r = "down"; out.push(box); box = null; state = 0; top = h; ti = i; cnt = 0; }
+      continue;
+    }
+    if (state === 0){
+      if (h > top){ top = h; ti = i; cnt = 0; }
+      else { cnt++; if (cnt >= 3){ let m = Infinity, mi = ti+1; for (let j = ti+1; j <= i; j++) if (L[j] < m){ m = L[j]; mi = j; }
+        bot = m; bcnt = i - mi; state = 1; if (bcnt >= 3){ state = 2; box = {s:ti, t:top, b:bot}; } } }
+      continue;
+    }
+    if (h > top){ state = 0; top = h; ti = i; cnt = 0; continue; }
+    if (l < bot){ bot = l; bcnt = 0; } else bcnt++;
+    if (bcnt >= 3){ state = 2; box = {s:ti, t:top, b:bot}; }
+  }
+  if (box){ box.e = n-1; box.r = "live"; out.push(box); }
+  return out;
+}
+function drawChart(el, rsiEl, s, D2, ctx){
+  const L = window.LightweightCharts, line = css("--line"), mute = css("--mute"), up = css("--up"), dn = css("--dn");
+  const base = {autoSize:true, layout:{background:{type:"solid", color:css("--card")}, textColor:mute, fontSize:11},
+    grid:{vertLines:{color:line}, horzLines:{color:line}}, rightPriceScale:{borderColor:line, minimumWidth:64}, timeScale:{borderColor:line},
+    crosshair:{mode:0}, localization:{locale:"en-IN", dateFormat:"dd MMM 'yy", priceFormatter:p => Number(p).toFixed(2)}};
+  const chart = L.createChart(el, base);
+  const n = D2.d.length, T = D2.d.map(dayStr);
   const cs = chart.addCandlestickSeries({upColor:up, downColor:dn, wickUpColor:up, wickDownColor:dn, borderVisible:false, priceLineVisible:false});
-  cs.setData(D2.d.map((t,i) => ({time:dayStr(t), open:D2.o[i], high:D2.h[i], low:D2.l[i], close:D2.c[i]})));
+  cs.setData(T.map((t,i) => ({time:t, open:D2.o[i], high:D2.h[i], low:D2.l[i], close:D2.c[i]})));
   cs.priceScale().applyOptions({scaleMargins:{top:0.1, bottom:0.24}});
-  const vs = chart.addHistogramSeries({priceFormat:{type:"volume"}, priceScaleId:"", lastValueVisible:false, priceLineVisible:false});
-  vs.priceScale().applyOptions({scaleMargins:{top:0.8, bottom:0}});
-  vs.setData(D2.d.map((t,i) => ({time:dayStr(t), value:D2.v[i], color:(D2.c[i]>=D2.o[i]?up:dn)+"66"})));
+  const vs = chart.addHistogramSeries({priceFormat:{type:"volume"}, priceScaleId:"vol", lastValueVisible:false, priceLineVisible:false});
+  chart.priceScale("vol").applyOptions({scaleMargins:{top:0.8, bottom:0}});
+  vs.setData(T.map((t,i) => ({time:t, value:D2.v[i], color:(D2.c[i]>=D2.o[i]?up:dn)+"66"})));
+  const lineOf = (vals, color, opts={}) => { const ls = chart.addLineSeries(Object.assign({color, lineWidth:1.5, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false}, opts));
+    ls.setData(T.map((t,i) => vals[i]==null ? {time:t} : {time:t, value:vals[i]})); return ls; };
+  if (IND.ema20) lineOf(ema(D2.c, 20), "#7c4dff");
+  if (IND.dma50) lineOf(sma(D2.c, 50), "#00897b");
+  if (IND.dma200) lineOf(sma(D2.c, 200), "#ef6c00");
+  if (IND.vol50) lineOf(sma(D2.v, 50), "#5c6bc0", {priceScaleId:"vol", lineWidth:1});
   const pl = (price, color, title, style=2) => price && cs.createPriceLine({price, color, lineWidth:1, lineStyle:style, axisLabelVisible:true, title});
   pl(s.h52, "#e08a00", "52W high");
-  const dv = s.dv;
-  if (dv && (dv.st==="box" || dv.st==="bo") && dv.s!=null) {
-    const a = Math.max(0, n-1-dv.s), b = dv.st==="bo" ? n-2 : n-1;
-    if (b > a) [dv.t, dv.b].forEach(p => {
-      const ls = chart.addLineSeries({color:"#2962ff", lineWidth:2, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false});
-      ls.setData([{time:dayStr(D2.d[a]), value:p}, {time:dayStr(D2.d[b]), value:p}]);
+  if (IND.boxes) {
+    const bx = darvasBoxes(D2.h, D2.l, D2.c).filter(b => b.e - b.s >= 3 && b.e >= n - 260);
+    const col = {up:"#2e9e5b", down:"#e53935", live:"#2962ff"};
+    // one short line per box edge (the chart library joins points across gaps, so each box gets its own series)
+    bx.slice(-25).forEach(b => {
+      const end = b.r === "live" ? n-1 : b.e;
+      ["t","b"].forEach(edge => {
+        const ls = chart.addLineSeries({color:col[b.r], lineWidth:2, lastValueVisible:false, priceLineVisible:false, crosshairMarkerVisible:false, autoscaleInfoProvider:() => null});
+        ls.setData([{time:T[b.s], value:b[edge]}, {time:T[end], value:b[edge]}]);
+      });
     });
   }
   if (ctx && ctx.avg) {
@@ -1001,9 +1092,43 @@ function drawChart(el, s, D2, ctx){
     cs.applyOptions({autoscaleInfoProvider: orig => { const r = orig(); if (r && r.priceRange) {
       r.priceRange.minValue = Math.min(r.priceRange.minValue, lo); r.priceRange.maxValue = Math.max(r.priceRange.maxValue, hi); } return r; }});
   }
-  chart.timeScale().setVisibleLogicalRange({from:Math.max(0, n-130), to:n+3});
-  return chart;
+  const charts = [chart];
+  if (rsiEl) {
+    const rc = L.createChart(rsiEl, Object.assign({}, base, {timeScale:{borderColor:line, visible:false}}));
+    const rs = rc.addLineSeries({color:"#8e24aa", lineWidth:1.5, priceLineVisible:false, lastValueVisible:true});
+    const rv = rsi(D2.c, 14);
+    rs.setData(T.map((t,i) => rv[i]==null ? {time:t} : {time:t, value:rv[i]}));
+    [70,30].forEach(p => rs.createPriceLine({price:p, color:mute, lineWidth:1, lineStyle:2, axisLabelVisible:false}));
+    rs.applyOptions({autoscaleInfoProvider:() => ({priceRange:{minValue:0, maxValue:100}})});
+    charts.push(rc);
+  }
+  const start = {from:Math.max(0, n-130), to:n+3};
+  charts.forEach(c => c.timeScale().setVisibleLogicalRange(start));
+  if (charts.length > 1) requestAnimationFrame(() => {
+    charts.forEach(c => c.timeScale().setVisibleLogicalRange(start));
+    let busy = false;
+    const sync = (a, b) => a.timeScale().subscribeVisibleLogicalRangeChange(r => { if (busy || !r) return; busy = true; b.timeScale().setVisibleLogicalRange(r); busy = false; });
+    sync(charts[0], charts[1]); sync(charts[1], charts[0]);
+  });
+  return charts;
 }
+
+// full-screen chart (also opens from index.html#c=<id> in a new tab)
+function openFull(k){
+  const s = BYK.get(k); if (!s) return;
+  clearCharts("fs");
+  const held = HELD.get(k);
+  $("fsname").innerHTML = `<b>${esc(s.s)}</b> <span class="na">${esc(s.n)}</span> · ₹${fmt(s.c)} <span style="color:${s.ch["1D"]>=0?"var(--up)":"var(--dn)"}">${sgn(s.ch["1D"])}</span>`;
+  $("fsind").innerHTML = indChips();
+  $("fstv").href = tvUrl(s);
+  $("fsnew").href = location.pathname + "#c=" + encodeURIComponent(k);
+  $("fsleg").innerHTML = legend(held);
+  $("fs").hidden = false; document.body.style.overflow = "hidden";
+  const id = "ch" + (++chartSeq);
+  $("fschart").innerHTML = `<div class="chart" id="${id}" style="height:100%"></div>`;
+  pending.push({id, s, ctx:held, view:"fs"}); mountCharts();
+}
+function closeFull(){ clearCharts("fs"); $("fs").hidden = true; document.body.style.overflow = ""; if (location.hash.startsWith("#c=")) history.replaceState(null, "", location.pathname); }
 
 function detail(s, ctx, cols, view){
   const d = s.dv || {};
@@ -1308,7 +1433,9 @@ document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showVie
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
 render();
 showView(store.get("view")==="pf" ? "pf" : "scan");
-loadPortfolio();
+$("fsclose").onclick = closeFull;
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("fs").hidden) closeFull(); });
+loadPortfolio().then(() => { if (location.hash.startsWith("#c=")) openFull(decodeURIComponent(location.hash.slice(3))); });
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
