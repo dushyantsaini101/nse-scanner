@@ -34,6 +34,7 @@ jobs:
           OUT_DIR: site
           NSE_CACHE: nse_cache
           TZ: Asia/Kolkata
+          WATCHLIST_URL: ${{ secrets.WATCHLIST_URL }}
         run: |
           pip install requests
           python nse_scanner.py

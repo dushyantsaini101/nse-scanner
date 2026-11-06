@@ -406,6 +406,11 @@ def analyse(recs, latest_day, sessions, periods):
     # volume vs 50-session average
     vols = [r[6] for r in recs[-51:-1] if r[6]]
     out["vx"] = r2(today[6] / (sum(vols) / len(vols))) if len(vols) >= 10 and today[6] else None
+    vols20 = [r[6] for r in recs[-21:-1] if r[6]]
+    out["v20"] = r2(today[6] / (sum(vols20) / len(vols20))) if len(vols20) >= 10 and today[6] else None
+    closes = [r[4] for r in recs]
+    out["d50"] = r2(sum(closes[-50:]) / 50) if len(closes) >= 50 else None
+    out["d200"] = r2(sum(closes[-200:]) / 200) if len(closes) >= 200 else None
 
     # Darvas box on the last year of sessions
     sl = recs[j52:]
@@ -522,6 +527,8 @@ def main():
     print("Calculating…")
     stocks, adj_log, charts = [], [], {}
     sess_idx = {d: i for i, d in enumerate(sessions)}
+    prev_day = sessions[-2] if len(sessions) > 1 else None
+    prev_sessions = sessions[:-1]
     groups = [("nse", nse_days, latest)]
     if bse_days:
         groups.append(("bse", bse_days, bse_days[-1][1]))
@@ -543,6 +550,11 @@ def main():
             cid = chart_id(ex, r)
             charts[cid] = recs
             a = analyse(recs, latest_day, sessions, PERIODS)
+            # the same numbers as of the previous session, for yesterday's momentum rank
+            a_prev = (analyse(recs[:-1], prev_day, prev_sessions, PERIODS)
+                      if prev_day and len(recs) > 1 and recs[-2][0] == prev_day else None)
+            if a_prev:
+                a_prev["c"] = recs[-2][4]
             if ex == "nse":
                 seg = "NSE SME" if r["series"] in NSE_SME else "NSE"
             else:
@@ -552,8 +564,12 @@ def main():
                 "x": "B" if ex == "bse" else "N", "code": r["code"] if ex == "bse" else "",
                 "sec": sector.get(r["sym"], "") if ex == "nse" else "",
                 "c": r["c"], "v": int(r["vol"]), "tv": round(r["val"] / 1e7, 2),
-                **a,
+                **a, "_prev": a_prev,
             })
+
+    print("Momentum scores…")
+    mom_prev, bench = add_momentum(stocks, index_members)
+    print(f"  benchmark (Nifty 50 equal-weight) 3M: today {bench[0]}%, previous session {bench[1]}%")
 
     counts = {}
     for s in stocks:
@@ -570,16 +586,19 @@ def main():
         "bse": bse_status,
         "bseSeries": bse_series,
         "adjustments": len(adj_log),
+        "prevAsOf": prev_day.strftime("%d %b %Y") if prev_day else "",
+        "bench3M": bench[0],
     }
 
     html = TEMPLATE.replace("/*__DATA__*/", json.dumps(
-        {"meta": meta, "stocks": stocks, "indices": index_members},
+        {"meta": meta, "stocks": stocks, "indices": index_members, "mprev": mom_prev},
         separators=(",", ":")))
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(html)
     write_app_files(os.path.dirname(OUT))
     write_charts(os.path.dirname(OUT), charts)
     write_csv(stocks, index_members, meta)
+    watchlist_history(stocks, mom_prev, latest_day, os.path.dirname(OUT))
     with open(os.path.join(DATA_DIR, "adjustments.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["Date", "Symbol", "Exchange", "BSE_Code", "Price_factor"])
@@ -594,6 +613,128 @@ def main():
             webbrowser.open("file://" + OUT)
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------- momentum score
+
+def _lin(x, lo, hi, pts):
+    """0 points at `lo` or below, full points at `hi` or above, straight line in between."""
+    if x is None:
+        return 0.0
+    return max(0.0, min(1.0, (x - lo) / (hi - lo))) * pts
+
+
+def momentum(a, c, bench3m):
+    """Momentum Score 0-100 from one stock's analysed numbers. Returns (score, parts, rs).
+    Keep in step with momParts() / MOM_PARTS in the page template."""
+    ch = a["ch"]
+    dv = a.get("dv") or {}
+    if dv.get("st") == "bo":
+        pdv = 10
+    elif dv.get("st") == "box" and dv.get("t"):
+        gap = (dv["t"] - c) / dv["t"] * 100
+        pdv = 7 if gap <= 3 else 4 if gap <= 7 else 2
+    else:
+        pdv = 0
+    rs = None if ch.get("3M") is None or bench3m is None else ch["3M"] - bench3m
+    up_day = (ch.get("1D") or 0) >= 0          # heavy volume only counts on a green day
+    parts = [
+        _lin(a.get("f52"), -25, 0, 20),        # closeness to 52-week high
+        _lin(ch.get("1W"), -5, 10, 10),        # 1 week %
+        _lin(ch.get("1M"), -10, 20, 10),       # 1 month %
+        _lin(ch.get("3M"), -15, 40, 15),       # 3 months %
+        _lin(a.get("v20"), 0.5, 2.5, 10) if up_day else 0.0,   # volume vs 20-day average
+        pdv,                                   # Darvas box
+        7.5 if a.get("d50") and c > a["d50"] else 0.0,          # above 50 DMA
+        7.5 if a.get("d200") and c > a["d200"] else 0.0,        # above 200 DMA
+        _lin(rs, -10, 25, 10),                 # 3M return vs Nifty 50
+    ]
+    return int(sum(parts) + 0.5), [round(p, 1) for p in parts], r2(rs)   # half-up, same as the page
+
+
+def add_momentum(stocks, index_members):
+    """Adds ms (score) and mi ([vol/20d avg, 50 DMA, 200 DMA]) to every stock; the page rebuilds the parts
+    from these with the same formula (momParts). Returns ({key: yesterday's score}, benchmarks).
+    Benchmark = equal-weight average 3M return of the Nifty 50 stocks (the bhavcopy has no index values)."""
+    n50 = set(index_members.get("Nifty 50", []))
+
+    def bench(get):
+        pool = [s for s in stocks if s["x"] == "N" and s["s"] in n50]
+        if len(pool) < 25:                     # index list missing: fall back to all NSE mainboard stocks
+            pool = [s for s in stocks if s["seg"] == "NSE"]
+            vals = sorted(v for v in map(get, pool) if v is not None)
+            return r2(vals[len(vals) // 2]) if vals else None
+        vals = [v for v in map(get, pool) if v is not None]
+        return r2(sum(vals) / len(vals)) if vals else None
+
+    b_now = bench(lambda s: s["ch"].get("3M"))
+    b_prev = bench(lambda s: s["_prev"]["ch"].get("3M") if s["_prev"] else None)
+    prev = {}
+    for s in stocks:
+        s["ms"] = momentum(s, s["c"], b_now)[0]
+        s["mi"] = [s.pop("v20"), s.pop("d50"), s.pop("d200")]
+        p = s.pop("_prev")
+        if p:
+            prev[s["k"]] = momentum(p, p["c"], b_prev)[0]
+    return prev, (b_now, b_prev)
+
+
+def rank_order(keys, score, sym):
+    """Watchlist ranking: highest score first, ties by symbol (the page uses the same rule)."""
+    return sorted(keys, key=lambda k: (-score[k], sym.get(k, k)))
+
+
+def watchlist_history(stocks, mom_prev, latest_day, site):
+    """Daily watchlist rank history, kept in the repository (data/watchlist_ranks.csv).
+    Needs the WATCHLIST_URL secret (Apps Script web app link with ?key=...). Also writes wl_hist.json for the page."""
+    path = os.path.join(DATA_DIR, "watchlist_ranks.csv")
+    head = ["Date", "Rank", "Symbol", "Exchange", "Key", "Score", "Prev_Rank", "Rank_Change"]
+    rows = []
+    if os.path.exists(path):
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = [r for r in csv.DictReader(f)]
+    url = os.environ.get("WATCHLIST_URL", "").strip()
+    keys = None
+    if not url:
+        print("Watchlist: WATCHLIST_URL not set — skipping rank history")
+    else:
+        try:
+            resp = requests.get(url, timeout=60)
+            data = resp.json()
+            if not data.get("ok"):
+                raise ValueError(data.get("error", "bad reply"))
+            keys = list(dict.fromkeys(it["k"] for it in data.get("items", []) if it.get("k")))
+            print(f"Watchlist: {len(keys)} stocks from Google Sheet")
+        except Exception as e:  # never fail the scanner because of the watchlist
+            print(f"Watchlist: could not read the Google Sheet ({type(e).__name__}: {e}) — skipping rank history")
+    if keys:
+        byk = {s["k"]: s for s in stocks}
+        sym = {k: s["s"] for k, s in byk.items()}
+        today = rank_order([k for k in keys if k in byk], {k: byk[k]["ms"] for k in byk}, sym)
+        before = rank_order([k for k in keys if k in mom_prev], mom_prev, sym)
+        prank = {k: i + 1 for i, k in enumerate(before)}
+        iso = latest_day.isoformat()
+        rows = [r for r in rows if r["Date"] != iso]
+        for i, k in enumerate(today):
+            s, pr = byk[k], prank.get(k)
+            rows.append({"Date": iso, "Rank": i + 1, "Symbol": s["s"], "Exchange": "BSE" if s["x"] == "B" else "NSE",
+                         "Key": k, "Score": s["ms"], "Prev_Rank": pr or "", "Rank_Change": (pr - i - 1) if pr else ""})
+        dates = sorted({r["Date"] for r in rows})[-400:]
+        keep = set(dates)
+        rows = sorted((r for r in rows if r["Date"] in keep), key=lambda r: (r["Date"], int(r["Rank"])), reverse=False)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=head)
+            w.writeheader()
+            w.writerows(rows)
+    # last 30 days of ranks for the page
+    dates = sorted({r["Date"] for r in rows})[-30:]
+    pos = {d: i for i, d in enumerate(dates)}
+    ranks = {}
+    for r in rows:
+        if r["Date"] in pos:
+            ranks.setdefault(r["Key"], [None] * len(dates))[pos[r["Date"]]] = int(r["Rank"])
+    with open(os.path.join(site, "wl_hist.json"), "w", encoding="utf-8") as f:
+        json.dump({"dates": dates, "r": ranks}, f, separators=(",", ":"))
 
 
 def chart_id(ex, r):
@@ -636,7 +777,8 @@ def write_csv(stocks, index_members, meta):
                    + ["Chg_" + p for p in periods]
                    + ["High_52W", "From_52WH_pct", "New_52W_High", "Vol_x_50d",
                       "Darvas_Status", "Box_Top", "Box_Bottom", "Box_Sessions",
-                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices", "ISIN"])
+                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices", "ISIN",
+                      "Momentum_Score"])
         for s in stocks:
             dv = s.get("dv") or {}
             w.writerow([s["s"], "BSE" if s["x"] == "B" else "NSE", s["code"], s["n"], s["seg"],
@@ -645,7 +787,7 @@ def write_csv(stocks, index_members, meta):
                        + [s["h52"], s["f52"], s["nh"], s["vx"],
                           dv.get("st", ""), dv.get("t", ""), dv.get("b", ""), dv.get("d", ""),
                           s["ipo"] or "", s["ib"], s["v"], s["tv"],
-                          "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else "", s["i"]])
+                          "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else "", s["i"], s["ms"]])
     with open(os.path.join(DATA_DIR, "meta_full.json"), "w") as f:
         json.dump(meta, f, indent=1)
 
@@ -764,12 +906,69 @@ h3.sec{font-size:15px;margin:18px 0 8px}
 .steps{margin:8px 0 0;padding-left:20px;font-size:13px;line-height:1.6}
 .err{color:var(--dn);font-size:13px;margin-top:8px}
 input.url{flex:1;min-width:200px}
+.tabs{overflow-x:auto}
+#ticker{position:sticky;top:0;z-index:20;background:var(--card);border-bottom:1px solid var(--line);overflow:hidden;white-space:nowrap;font-size:12px;font-variant-numeric:tabular-nums}
+#ticker .tk{display:inline-flex;gap:20px;padding:7px 10px;animation:tk var(--tkdur,60s) linear infinite;will-change:transform}
+#ticker:hover .tk,#ticker:active .tk{animation-play-state:paused}
+#ticker a{color:var(--ink);text-decoration:none;cursor:pointer}
+#ticker a b{margin-right:4px} #ticker .r1{color:var(--mute);margin-right:3px}
+@keyframes tk{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){#ticker{overflow-x:auto} #ticker .tk{animation:none}}
+button.wlb{border:1px solid var(--line);background:var(--card);color:var(--acc);border-radius:6px;padding:1px 6px;font:inherit;font-size:11px;font-weight:600;cursor:pointer;margin-left:6px;vertical-align:middle}
+button.wlb.on{background:var(--upbg);color:var(--up);border-color:transparent}
+.score{display:inline-block;min-width:36px;padding:2px 6px;border-radius:6px;font-weight:700;text-align:center}
+.score.hi{background:var(--upbg);color:var(--up)} .score.mid{background:var(--ambbg);color:var(--amb)} .score.lo{background:var(--bg);color:var(--mute)}
+td.rk b{display:block;font-size:15px} .rkc{font-size:11px;color:var(--mute)} .rkc.u{color:var(--up)} .rkc.d{color:var(--dn)}
+.panel.new20{border-color:var(--amb);background:var(--ambbg)} .panel.new20 b{color:var(--amb)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+button.tg{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:14px;padding:4px 10px;font:inherit;font-size:12px;cursor:pointer}
+button.tg.on{background:var(--acc);border-color:var(--acc);color:#fff}
+button.tg small{opacity:.7}
+textarea{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px;width:100%;margin-top:8px}
+.mbk{width:100%;margin-top:6px} .mbk td{padding:5px 4px;border-bottom:1px solid var(--line);white-space:normal;text-align:left;vertical-align:top}
+.mbk td.p{text-align:right;white-space:nowrap;font-weight:600}
+.mbk small{display:block;color:var(--mute);font-size:11px}
+.bar{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:3px;max-width:180px} .bar i{display:block;height:100%;background:var(--acc)}
+.wled{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:12px}
+.wled h4{margin:0 0 4px;font-size:13px}
+tr.n20 td:first-child{box-shadow:inset 3px 0 var(--amb)}
+.ok{color:var(--up)}
 @media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .chart.withrsi{height:350px} .stat b{font-size:16px} .stat{min-width:96px}}
 </style></head><body>
 <div id="fs" hidden><div class="fshead"><span id="fsname"></span><span class="cbtns"><a id="fsnew" target="_blank" rel="noopener">Naye tab mein ↗</a><a id="fstv" target="_blank" rel="noopener">TradingView ↗</a><button class="btn sm" id="fsclose">✕ Band karo</button></span></div><div class="indbar" id="fsind"></div><div id="fschart"></div><div class="chartbar"><span id="fsleg"></span></div></div>
+<div id="ticker" hidden><div class="tk" id="tk"></div></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
-<nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="pf">Mera Portfolio</button></nav></header>
+<nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="wl">Watchlist</button><button data-v="pf">Mera Portfolio</button></nav></header>
+<div class="wrap" id="v-wl" hidden>
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Mera Watchlist</b><span class="sub" id="wlsync"></span></div>
+    <details id="wladd"><summary>+ Stocks add karo</summary>
+      <div class="hint">Symbols paste karo, kisi bhi format mein: <b>RELIANCE, NSE:TCS, BSE:500325</b>. Comma, space ya nayi line se alag karo. Scanner tab mein har stock pe <b>+ WL</b> button bhi hai.</div>
+      <textarea id="wlpaste" rows="3" placeholder="RELIANCE, NSE:TCS&#10;BSE:500325"></textarea>
+      <div class="row"><button class="btn" id="wlpastebtn">Add karo</button>
+        <label class="btn">CSV import (Kite etc.)<input type="file" id="wlcsv" accept=".csv,.txt,text/csv" hidden></label></div>
+      <div class="row"><label class="l grow">Poora index ek saath add karo<select id="wlidx"></select></label><button class="btn" id="wlidxbtn">Index add karo</button></div>
+      <div class="hint" id="wlmsg"></div>
+    </details>
+    <details id="wlsetup"><summary>Google Sheet connection</summary>
+      <div class="hint">Notes, tags aur watchlist aapki Google Sheet mein save hote hain (Apps Script web app ke through). Link aur key sirf is browser mein save hote hain.</div>
+      <div class="row"><input class="url" id="wlurl" placeholder="Web app URL (https://script.google.com/macros/s/…/exec)"></div>
+      <div class="row"><input class="url" id="wlkey" placeholder="Secret key (setup se mili)"><button class="btn" id="wlconnect">Connect karo</button><button class="btn" id="wldisc">Disconnect</button></div>
+      <div class="row"><button class="btn" id="wlexport">Watchlist CSV download</button><button class="btn" id="wlclear">Poori watchlist khali karo</button></div>
+    </details>
+  </div>
+  <div class="panel new20" id="wlnew" hidden><b>New in Top 20 today</b><div class="chips" id="wlnewlist" style="margin-top:8px"></div></div>
+  <div class="panel">
+    <div class="row"><input type="search" id="wlq" placeholder="Search symbol, naam ya note…">
+      <label class="l">Sort<select id="wlsort"><option value="rank">Momentum score (rank)</option><option value="chg">Rank change (sabse upar chadhe)</option><option value="d1">Aaj ka % change</option><option value="sym">Symbol A–Z</option><option value="added">Naye add kiye pehle</option></select></label></div>
+    <div class="chips" id="wltags" style="margin-top:10px"></div>
+  </div>
+  <div class="stats" id="wlstats"></div>
+  <div class="tbl"><table><thead><tr id="wlhead"></tr></thead><tbody id="wlbody"></tbody></table>
+  <div class="pager"><span id="wlinfo"></span><span><button class="btn" id="wlmore">Aur dikhao</button></span></div></div>
+  <div class="foot" id="wlfoot"></div>
+</div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
     <b>Portfolio sheet ka link</b>
@@ -877,13 +1076,14 @@ Object.keys(IDX).forEach(k => og.appendChild(new Option(`${k} (${IDX[k].length})
 $("universe").appendChild(og);
 $("sector").add(new Option("All sectors",""));
 [...new Set(S.map(s=>s.sec).filter(Boolean))].sort().forEach(s => $("sector").add(new Option(s,s)));
-[["chg","% change"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["tv","Traded value"],["sym","Symbol A–Z"]]
+[["chg","% change"],["ms","Momentum score"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["tv","Traded value"],["sym","Symbol A–Z"]]
   .forEach(([v,t])=>$("sortsel").add(new Option(t,v)));
 
 const COLS = [
   {k:"sym", t:"Stock", cls:"l"},
   {k:"c", t:"Close ₹"},
   {k:"chg", t:"% Chg"},
+  {k:"ms", t:"Score", cls:"hide-m"},
   {k:"f52", t:"From 52W high", cls:"hide-m"},
   {k:"vx", t:"Vol × avg", cls:"hide-m"},
   {k:"dv", t:"Darvas box", cls:"l hide-m"},
@@ -944,7 +1144,7 @@ function dvCell(s){
 
 // ---------- charts
 const LWC_URL = "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js";
-let lwcPromise = null, pending = [], live = {scan:[], pf:[], fs:[]}, chartSeq = 0;
+let lwcPromise = null, pending = [], live = {scan:[], pf:[], fs:[], wl:[]}, chartSeq = 0;
 const chartData = new Map();
 const IND_DEF = [["ema20","20 EMA","#7c4dff"],["dma50","50 DMA","#00897b"],["dma200","200 DMA","#ef6c00"],["vol50","Vol avg","#5c6bc0"],["rsi","RSI 14","#8e24aa"],["boxes","Darvas boxes","#2962ff"]];
 let IND = {ema20:true, dma50:true, dma200:false, vol50:false, rsi:false, boxes:true};
@@ -1130,7 +1330,7 @@ function openFull(k){
 }
 function closeFull(){ clearCharts("fs"); $("fs").hidden = true; document.body.style.overflow = ""; if (location.hash.startsWith("#c=")) history.replaceState(null, "", location.pathname); }
 
-function detail(s, ctx, cols, view){
+function detail(s, ctx, cols, view, pre){
   const d = s.dv || {};
   const items = [];
   const add = (k,v) => items.push(`<div><span>${k}</span><b>${v}</b></div>`);
@@ -1148,7 +1348,7 @@ function detail(s, ctx, cols, view){
   const ch = M.periods.map(([k])=>`${k} ${sgn(s.ch[k])}`).join(" · ");
   add("Returns", ch);
   if (memberOf[s.s] && s.x==="N") add("Indices", esc(memberOf[s.s].join(", ")));
-  return `<tr class="det"><td colspan="${cols||COLS.length}"><div class="dgrid">${items.join("")}</div>${chartHtml(s, ctx, view)}</td></tr>`;
+  return `<tr class="det"><td colspan="${cols||COLS.length}">${pre||""}<div class="dgrid">${items.join("")}</div>${chartHtml(s, ctx, view)}</td></tr>`;
 }
 
 let current = [];
@@ -1197,9 +1397,11 @@ function render(){
     if (s.dv && s.dv.st==="bo") tags += ` <span class="chip bo">Breakout</span>`;
     const held = HELD.get(s.k);
     if (held) tags += ` <span class="chip hold">Holding</span>`;
+    tags += wlBtn(s.k);
     const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
       <td>${fmt(s.c)}</td>
       <td><span class="pill ${cls}">${sgn(c)}</span></td>
+      <td class="hide-m">${scoreChip(s.ms)}</td>
       <td class="hide-m">${sgn(s.f52)}</td>
       <td class="hide-m">${s.vx==null?"—":fmt(s.vx,1)+"×"}</td>
       <td class="l hide-m">${dvCell(s)}</td>
@@ -1424,15 +1626,342 @@ function renderPf(){
   mountCharts();
 }
 $("pfsave").onclick = () => { store.set("pf_url", $("pfurl").value.trim()); loadPortfolio(); };
+// ---------- watchlist (Google Sheet via Apps Script, with a local copy for offline use)
+const DEF_TAGS = ["Darvas","IPO Base","PEAD","SME","Watch Closely"];
+const MP = D.mprev || {};
+const BYCODE = new Map(S.filter(s => s.code).map(s => [String(s.code), s]));
+const cmpStr = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+const scoreChip = v => v==null ? `<span class="na">—</span>` : `<span class="score ${v>=70?"hi":v>=40?"mid":"lo"}">${v}</span>`;
+// same parts, order and maths as momentum() in nse_scanner.py
+const lin = (x, lo, hi, pts) => x==null ? 0 : Math.max(0, Math.min(1, (x-lo)/(hi-lo))) * pts;
+function momParts(s){
+  const ch = s.ch, d = s.dv || {}, m = s.mi || [];
+  const gap = d.st==="box" && d.t ? (d.t - s.c)/d.t*100 : null;
+  const pdv = d.st==="bo" ? 10 : gap==null ? 0 : gap <= 3 ? 7 : gap <= 7 ? 4 : 2;
+  const rs = ch["3M"]==null || M.bench3M==null ? null : ch["3M"] - M.bench3M;
+  return {rs, v20:m[0], d50:m[1], d200:m[2], p:[
+    lin(s.f52, -25, 0, 20), lin(ch["1W"], -5, 10, 10), lin(ch["1M"], -10, 20, 10), lin(ch["3M"], -15, 40, 15),
+    (ch["1D"]||0) >= 0 ? lin(m[0], 0.5, 2.5, 10) : 0, pdv,
+    m[1] && s.c > m[1] ? 7.5 : 0, m[2] && s.c > m[2] ? 7.5 : 0, lin(rs, -10, 25, 10)]};
+}
+const MOM_PARTS = [
+  ["52W high ke kitna paas", 20, s => `${sgn(s.f52)} 52W high (₹${fmt(s.h52)}) se · 0% par poore 20, −25% ya neeche 0`],
+  ["1 week change", 10, s => `${sgn(s.ch["1W"])} · −5% par 0, +10% par poore 10`],
+  ["1 month change", 10, s => `${sgn(s.ch["1M"])} · −10% par 0, +20% par poore 10`],
+  ["3 month change", 15, s => `${sgn(s.ch["3M"])} · −15% par 0, +40% par poore 15`],
+  ["Volume vs 20-din avg", 10, (s,m) => `${m.v20==null?"—":fmt(m.v20,1)+"×"} · 0.5× par 0, 2.5× par poore 10 · sirf green din (aaj ${sgn(s.ch["1D"])}) pe milte hain`],
+  ["Darvas box", 10, s => { const d = s.dv||{}; const now = d.st==="bo" ? "aaj breakout" : d.st==="box" ? `box mein, top ₹${fmt(d.t)} se ${fmt((d.t-s.c)/d.t*100,1)}% neeche` : d.st==="form" ? "box ban raha hai" : "data kam hai";
+    return `${now} · breakout 10, top se ≤3% 7, ≤7% 4, box mein 2`; }],
+  ["50 DMA ke upar", 7.5, (s,m) => `Close ₹${fmt(s.c)} vs 50 DMA ${m.d50==null?"— (50 din ka data nahi)":"₹"+fmt(m.d50)}`],
+  ["200 DMA ke upar", 7.5, (s,m) => `Close ₹${fmt(s.c)} vs 200 DMA ${m.d200==null?"— (200 din ka data nahi)":"₹"+fmt(m.d200)}`],
+  ["Nifty se strength (3M)", 10, (s,m) => `Stock 3M ${sgn(s.ch["3M"])} − Nifty 50 ${sgn(M.bench3M)} = ${m.rs==null?"—":(m.rs>0?"+":"")+fmt(m.rs)+" pts"} · −10 par 0, +25 par poore 10`],
+];
+const WLK = {cache:"wl_cache", queue:"wl_queue", api:"wl_api"};
+const jget = (k, d) => { try { const v = JSON.parse(store.get(k) || "null"); return v == null ? d : v; } catch(e){ return d; } };
+let WL = new Map(), wlQueue = [], wlOpen = new Set(), wlLimit = 100, wlTag = "", wlBusy = false, wlAgain = false, wlErr = "", wlSynced = null, wlDirty = false;
+let RANK = new Map(), PRANK = new Map(), wlHist = null;
+
+function wlSaveCache(){ store.set(WLK.cache, JSON.stringify({items:[...WL.values()], at:Date.now(), synced:wlSynced})); }
+function wlSaveQueue(){ store.set(WLK.queue, JSON.stringify(wlQueue)); }
+const wlApi = () => jget(WLK.api, null);
+function applyOp(op){
+  if (op.op === "add") op.items.forEach(it => {
+    const e = WL.get(it.k);
+    if (!e) WL.set(it.k, Object.assign({notes:"", tags:[], added:new Date().toISOString().slice(0,10)}, it));
+    else { if (!e.notes && it.notes) e.notes = it.notes; if (it.tags && it.tags.length) e.tags = [...new Set([...(e.tags||[]), ...it.tags])]; }
+  });
+  else if (op.op === "remove") op.keys.forEach(k => WL.delete(k));
+  else if (op.op === "update") { const e = WL.get(op.k); if (e) { if (op.notes != null) e.notes = op.notes; if (op.tags) e.tags = op.tags; } }
+}
+function wlDo(op){ applyOp(op); wlQueue.push(op); wlSaveQueue(); wlSaveCache(); wlRefresh(); wlSync(); }
+const wlItem = s => ({k:s.k, sym:s.s, ex:s.x==="B"?"BSE":"NSE", name:s.n});
+
+async function wlSync(){
+  const a = wlApi();
+  if (!a || !a.url) { wlRefresh(); return; }
+  if (wlBusy) { wlAgain = true; return; }
+  wlBusy = true; wlStatus("Sheet se sync ho raha hai…");
+  try {
+    const sent = wlQueue.slice();
+    const res = sent.length
+      ? await fetch(a.url, {method:"POST", body:JSON.stringify({key:a.key, ops:sent})})  // text/plain: no CORS pre-check
+      : await fetch(a.url + (a.url.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(a.key || ""));
+    let j; try { j = await res.json(); } catch(e) { throw new Error("Web app ka jawab samajh nahi aaya. Deploy mein 'Who has access: Anyone' chuna hai?"); }
+    if (!j.ok) throw new Error(j.error || "Sheet ne error diya");
+    wlQueue = wlQueue.slice(sent.length); wlSaveQueue();
+    WL = new Map((j.items||[]).map(i => [i.k, i]));
+    wlQueue.forEach(applyOp);
+    wlSynced = Date.now(); wlErr = ""; wlSaveCache();
+  } catch(e) {
+    wlErr = (e && e.message && !/fetch|network|load failed/i.test(e.message)) ? e.message : "offline";
+  }
+  wlBusy = false; wlRefresh();
+  if (wlAgain) { wlAgain = false; wlSync(); }
+}
+function wlStatus(msg){
+  const a = wlApi(), n = wlQueue.length;
+  let t = msg;
+  if (!t) {
+    if (!a || !a.url) t = "Sirf is browser mein save · Sheet connect nahi";
+    else if (wlErr === "offline") t = `Offline · ${n ? n + " badlav baad mein sync honge" : "purani copy dikh rahi hai"}`;
+    else if (wlErr) t = "⚠ " + wlErr;
+    else t = `<span class="ok">✓ Sheet se synced</span> ${wlSynced ? new Date(wlSynced).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"}) : ""}${n ? " · " + n + " pending" : ""}`;
+  }
+  $("wlsync").innerHTML = t;
+}
+
+function wlRanks(){
+  const keys = [...WL.keys()], sym = k => (BYK.get(k) || {}).s || k;
+  const today = keys.filter(k => BYK.has(k)).sort((a,b) => (BYK.get(b).ms - BYK.get(a).ms) || cmpStr(sym(a), sym(b)));
+  const prev = keys.filter(k => MP[k] != null).sort((a,b) => (MP[b] - MP[a]) || cmpStr(sym(a), sym(b)));
+  RANK = new Map(today.map((k,i) => [k, i+1])); PRANK = new Map(prev.map((k,i) => [k, i+1]));
+  return today;
+}
+const rankChg = k => { const r = RANK.get(k), p = PRANK.get(k); return r && p ? p - r : null; };
+function rankCell(k){
+  const r = RANK.get(k); if (!r) return `<b class="na">—</b>`;
+  const c = rankChg(k);
+  const ch = !PRANK.size ? "" : c == null ? `<span class="rkc u">new</span>` : c > 0 ? `<span class="rkc u">▲ ${c}</span>` : c < 0 ? `<span class="rkc d">▼ ${-c}</span>` : `<span class="rkc">=</span>`;
+  return `<b>${r}</b>${ch}`;
+}
+const isNew20 = k => RANK.get(k) <= 20 && PRANK.size && !(PRANK.get(k) <= 20);
+function allTags(){
+  const used = new Map();
+  WL.forEach(it => (it.tags||[]).forEach(t => used.set(t, (used.get(t)||0) + 1)));
+  const list = [...DEF_TAGS, ...[...used.keys()].filter(t => !DEF_TAGS.includes(t)).sort()];
+  return list.map(t => [t, used.get(t) || 0]);
+}
+function wlBtn(k){ const on = WL.has(k); return `<button class="wlb${on?" on":""}" data-wl="${esc(k)}" title="${on?"Watchlist se hatao":"Watchlist mein daalo"}">${on?"✓ WL":"+ WL"}</button>`; }
+function wlButtons(){ document.querySelectorAll("button.wlb").forEach(b => { const on = WL.has(b.dataset.wl); b.classList.toggle("on", on); b.textContent = on ? "✓ WL" : "+ WL"; }); }
+
+function renderTicker(order){
+  const top = order.slice(0, 20).map(k => BYK.get(k));
+  $("ticker").hidden = !top.length;
+  if (!top.length) return;
+  const one = top.map((s,i) => { const d = s.ch["1D"];
+    return `<a data-tk="${esc(s.k)}"><span class="r1">${i+1}.</span><b>${esc(s.s)}</b>₹${fmt(s.c)} <span style="color:${d>0?"var(--up)":d<0?"var(--dn)":"var(--mute)"}">${sgn(d)}</span></a>`; }).join("");
+  $("tk").innerHTML = one + one;          // twice, so the loop is seamless
+  $("tk").style.setProperty("--tkdur", Math.max(20, top.length * 4) + "s");
+}
+
+function wlRefresh(){
+  const order = wlRanks();
+  renderTicker(order); wlButtons(); wlStatus();
+  if ($("v-wl").hidden) return;
+  if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#wlbody textarea, #wlbody input")) { wlDirty = true; return; }
+  renderWl(order);
+}
+
+function wlFiltered(order){
+  const q = $("wlq").value.trim().toUpperCase();
+  const missing = [...WL.keys()].filter(k => !BYK.has(k));
+  let list = order.concat(missing).filter(k => {
+    const it = WL.get(k), s = BYK.get(k);
+    if (wlTag && !(it.tags||[]).includes(wlTag)) return false;
+    if (q && !(it.sym||"").toUpperCase().includes(q) && !((s && s.n) || it.name || "").toUpperCase().includes(q) && !(it.notes||"").toUpperCase().includes(q)) return false;
+    return true;
+  });
+  const so = $("wlsort").value, big = 1e9;
+  if (so === "chg") list.sort((a,b) => (rankChg(b) ?? -big) - (rankChg(a) ?? -big) || (RANK.get(a)||big) - (RANK.get(b)||big));
+  else if (so === "d1") list.sort((a,b) => ((BYK.get(b)||{ch:{}}).ch["1D"] ?? -big) - ((BYK.get(a)||{ch:{}}).ch["1D"] ?? -big));
+  else if (so === "sym") list.sort((a,b) => cmpStr(WL.get(a).sym||a, WL.get(b).sym||b));
+  else if (so === "added") list.sort((a,b) => cmpStr(String(WL.get(b).added||""), String(WL.get(a).added||"")));
+  return list;
+}
+
+function wlEditor(k, s){
+  const it = WL.get(k), mine = new Set(it.tags||[]), m = momParts(s);
+  const parts = MOM_PARTS.map(([lab, max, why], i) => { const p = m.p[i] || 0;
+    return `<tr><td>${lab}<small>${why(s, m)}</small><div class="bar"><i style="width:${Math.round(p/max*100)}%"></i></div></td><td class="p">${fmt(p,1).replace(/\.0$/,"")} / ${max}</td></tr>`; }).join("");
+  const h = wlHist && wlHist.r[k] ? wlHist.r[k].map((r,i) => [wlHist.dates[i], r]).filter(x => x[1] != null).slice(-10) : [];
+  const hist = h.length > 1 ? `<div class="hint">Rank history (Sheet wale din): ${h.map(([d,r]) => `<span title="${esc(d)}">${r}</span>`).join(" → ")}</div>` : "";
+  const prevTxt = MP[k] != null ? ` · kal ${MP[k]}` : "";
+  return `<div class="wled">
+    <div><h4>Momentum Score: ${scoreChip(s.ms)} <span class="na" style="font-weight:400">${prevTxt} · rank ${RANK.get(k)||"—"}${PRANK.get(k)?` (kal ${PRANK.get(k)})`:""}</span></h4>
+      <table class="mbk">${parts}<tr><td><b>Total</b></td><td class="p">${s.ms} / 100</td></tr></table>${hist}</div>
+    <div><h4>Tags</h4><div class="chips">${allTags().map(([t]) => `<button class="tg${mine.has(t)?" on":""}" data-wtag="${esc(t)}" data-k="${esc(k)}">${esc(t)}</button>`).join("")}</div>
+      <div class="row"><input id="wlnt-${esc(k)}" placeholder="Apna tag likho" maxlength="30" style="flex:1"><button class="btn sm" data-wnewtag="${esc(k)}">+ Tag</button></div>
+      <h4 style="margin-top:12px">Notes</h4><textarea id="wln-${esc(k)}" rows="3" data-k="${esc(k)}" placeholder="Is stock ke baare mein note…">${esc(it.notes||"")}</textarea>
+      <div class="row"><button class="btn sm" data-wsave="${esc(k)}">Note save karo</button><button class="btn sm" data-wdel="${esc(k)}">Watchlist se hatao</button></div></div></div>`;
+}
+
+function renderWl(order){
+  clearCharts("wl");
+  order = order || wlRanks();
+  const list = wlFiltered(order);
+  $("wltags").innerHTML = `<button class="tg${wlTag?"":" on"}" data-wtf="">Sab <small>${WL.size}</small></button>` +
+    allTags().map(([t,n]) => `<button class="tg${wlTag===t?" on":""}" data-wtf="${esc(t)}">${esc(t)} <small>${n}</small></button>`).join("");
+  const new20 = order.filter(isNew20);
+  $("wlnew").hidden = !new20.length;
+  $("wlnewlist").innerHTML = new20.map(k => { const s = BYK.get(k), p = PRANK.get(k);
+    return `<button class="tg" data-tk="${esc(k)}"><b>${esc(s.s)}</b> #${RANK.get(k)} <small>${p?"kal #"+p:"naya"}</small></button>`; }).join("");
+  const sc = order.map(k => BYK.get(k).ms);
+  $("wlstats").innerHTML = `
+    <div class="stat"><b>${fmtInt(WL.size)}</b><span>stocks watchlist mein</span></div>
+    <div class="stat"><b>${sc.length ? Math.round(sc.reduce((a,b)=>a+b,0)/sc.length) : "—"}</b><span>average score</span></div>
+    <div class="stat"><b style="color:var(--up)">${sc.filter(v=>v>=70).length}</b><span>score 70+</span></div>
+    <div class="stat"><b style="color:var(--amb)">${new20.length}</b><span>new in top 20</span></div>`;
+  const NC = 5;
+  $("wlhead").innerHTML = `<th>#</th><th class="l">Stock</th><th>Score</th><th>Close ₹</th><th class="l hide-m">Darvas</th>`;
+  const rows = list.slice(0, wlLimit);
+  $("wlbody").innerHTML = rows.map(k => {
+    const it = WL.get(k), s = BYK.get(k);
+    const tags = (it.tags||[]).map(t => `<span class="tag">${esc(t)}</span>`).join("");
+    if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk"><b class="na">—</b></td><td class="l sym"><b>${esc(it.sym||k)}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua?)</small></td><td colspan="3" class="l"><button class="btn sm" data-wdel="${esc(k)}">Hatao</button></td></tr>`;
+    const d1 = s.ch["1D"], held = HELD.get(k);
+    const main = `<tr class="r${isNew20(k)?" n20":""}" data-wk="${esc(k)}"><td class="rk">${rankCell(k)}</td>
+      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}</small></td>
+      <td>${scoreChip(s.ms)}</td>
+      <td>${fmt(s.c)}<small class="sub2" style="color:${d1>0?"var(--up)":d1<0?"var(--dn)":"var(--mute)"}">${sgn(d1)}</small></td>
+      <td class="l hide-m">${dvCell(s)}</td></tr>`;
+    return main + (wlOpen.has(k) ? detail(s, held, NC, "wl", wlEditor(k, s)) : "");
+  }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">${WL.size ? "Is filter mein koi stock nahi." : "Watchlist khali hai. Upar “+ Stocks add karo” kholo, ya Scanner mein kisi stock pe “+ WL” dabao."}</td></tr>`;
+  $("wlinfo").textContent = list.length ? `${fmtInt(Math.min(wlLimit, list.length))} / ${fmtInt(list.length)} dikh rahe · tap karo score ka breakdown, notes aur chart ke liye` : "";
+  $("wlmore").hidden = list.length <= wlLimit;
+  $("wlfoot").innerHTML = `Momentum Score roz ${esc(M.asOf)} ke end-of-day data se banta hai (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
+  wlDirty = false;
+  mountCharts();
+}
+
+// --- adding stocks
+function resolveToken(t){
+  t = String(t||"").trim().replace(/^["']+|["']+$/g, "").toUpperCase();
+  if (!t) return null;
+  let x = null, m = t.match(/^(NSE|BSE|NS|BO)\s*:\s*(.+)$/);
+  if (m) { x = m[1].startsWith("B") ? "B" : "N"; t = m[2].trim(); }
+  if ((m = t.match(/^(.+)\.(NS|BO)$/))) { x = m[2]==="BO" ? "B" : "N"; t = m[1]; }
+  t = t.replace(/-(EQ|BE|BZ|SM|ST)$/, "");
+  if (/^IN[A-Z0-9]{10}$/.test(t)) return BYISIN.get(t) || null;
+  if (/^\d{6}$/.test(t)) return BYCODE.get(t) || null;
+  return (x ? BYSYM.get(x+":"+t) : BYSYM.get("N:"+t)) || BYSYM.get("*:"+t) || null;
+}
+function tokensFromText(text){
+  return text.replace(/\b(NSE|BSE)\s*:\s*/gi, "$1:").split(/[\s,;|]+/).filter(Boolean);
+}
+function tokensFromCSV(text){
+  const rows = parseCSV(text).filter(r => r.some(c => c.trim()));
+  const PRI = [/^trading ?symbol$/, /^symbol$/, /^instrument/, /^ticker/, /^scrip ?code/, /^security ?id/, /^isin/, /^scrip/, /^stock/];
+  for (let i = 0; i < Math.min(rows.length, 10); i++) {
+    const H = rows[i].map(c => c.trim().toLowerCase());
+    for (const re of PRI) {
+      const c = H.findIndex(h => re.test(h));
+      if (c >= 0) {
+        const ex = H.findIndex(h => /^exch/.test(h));
+        return rows.slice(i+1).map(r => { const v = (r[c]||"").trim(), e = ex >= 0 ? (r[ex]||"").trim().toUpperCase() : "";
+          return v && e && !v.includes(":") && /^(NSE|BSE)/.test(e) ? e.slice(0,3)+":"+v : v; }).filter(Boolean);
+      }
+    }
+  }
+  return rows.map(r => r[0]).concat(...rows.map(r => r.slice(1))).map(c => c.trim()).filter(Boolean);  // no heading: every cell
+}
+function addStocks(tokens, label){
+  const found = new Map(), miss = [];
+  tokens.forEach(t => { const s = resolveToken(t); if (s) found.set(s.k, s); else if (!/^(symbol|exchange|nse|bse)$/i.test(t)) miss.push(t); });
+  const fresh = [...found.values()].filter(s => !WL.has(s.k));
+  if (fresh.length) wlDo({op:"add", items:fresh.map(wlItem)});
+  const have = found.size - fresh.length;
+  $("wlmsg").innerHTML = `${label ? esc(label)+": " : ""}<b class="ok">${fresh.length} add hue</b>${have?` · ${have} pehle se the`:""}${miss.length?` · ${miss.length} nahi mile: ${esc([...new Set(miss)].slice(0,15).join(", "))}${miss.length>15?"…":""}`:""}`;
+}
+$("wlpastebtn").onclick = () => { addStocks(tokensFromText($("wlpaste").value)); $("wlpaste").value = ""; };
+$("wlcsv").onchange = e => { const f = e.target.files[0]; if (!f) return;
+  f.text().then(t => addStocks(tokensFromCSV(t), f.name)); e.target.value = ""; };
+$("wlidx").add(new Option("Index chuno…", ""));
+Object.keys(IDX).forEach(k => $("wlidx").add(new Option(`${k} (${IDX[k].length})`, "I:"+k)));
+$("wlidx").add(new Option(`All NSE SME (${fmtInt(cnt("NSE SME"))})`, "S:NSE SME"));
+$("wlidx").add(new Option(`All BSE SME (${fmtInt(cnt("BSE SME"))})`, "S:BSE SME"));
+$("wlidxbtn").onclick = () => {
+  const v = $("wlidx").value; if (!v) return;
+  const list = v.startsWith("I:") ? IDX[v.slice(2)].map(sym => BYSYM.get("N:"+sym.toUpperCase())).filter(Boolean)
+                                  : S.filter(s => s.seg === v.slice(2));
+  const fresh = list.filter(s => !WL.has(s.k));
+  if (fresh.length > 300 && !confirm(`${fresh.length} stocks add honge. Theek hai?`)) return;
+  if (fresh.length) wlDo({op:"add", items:fresh.map(wlItem)});
+  $("wlmsg").innerHTML = `${esc(v.slice(2))}: <b class="ok">${fresh.length} add hue</b> · ${list.length - fresh.length} pehle se the`;
+};
+
+// --- clicks: scanner "+ WL", ticker, tags, notes
+function wlToggle(k){
+  const it = WL.get(k);
+  if (it) { if ((it.notes || (it.tags||[]).length) && !confirm(`${it.sym} ke notes/tags bhi hat jayenge. Hatana hai?`)) return; wlDo({op:"remove", keys:[k]}); }
+  else { const s = BYK.get(k); if (s) wlDo({op:"add", items:[wlItem(s)]}); }
+}
+function saveNote(k){ const ta = document.getElementById("wln-"+k), it = WL.get(k); if (ta && it && ta.value !== (it.notes||"")) wlDo({op:"update", k, notes:ta.value}); }
+document.addEventListener("click", e => {
+  const b = e.target.closest("button.wlb");
+  if (b) { e.stopPropagation(); wlToggle(b.dataset.wl); return; }
+  const tk = e.target.closest("[data-tk]");
+  if (tk) { const k = tk.dataset.tk; wlOpen.add(k); $("wlq").value = ""; wlTag = ""; showView("wl");
+    const row = document.querySelector(`#wlbody tr[data-wk="${CSS.escape(k)}"]`); if (row) row.scrollIntoView({block:"center"}); }
+}, true);
+$("wltags").onclick = e => { const b = e.target.closest("[data-wtf]"); if (b) { wlTag = b.dataset.wtf; wlLimit = 100; renderWl(); } };
+$("wlbody").addEventListener("click", e => {
+  let b;
+  if ((b = e.target.closest("[data-wtag]"))) { const k = b.dataset.k, t = b.dataset.wtag, cur = WL.get(k).tags || [];
+    saveNote(k); wlDo({op:"update", k, tags: cur.includes(t) ? cur.filter(x => x !== t) : cur.concat(t)}); return; }
+  if ((b = e.target.closest("[data-wnewtag]"))) { const k = b.dataset.wnewtag, inp = document.getElementById("wlnt-"+k);
+    const t = (inp.value || "").replace(/[,]/g, " ").trim().replace(/\s+/g, " "); if (!t) return;
+    const cur = WL.get(k).tags || []; saveNote(k); if (!cur.includes(t)) wlDo({op:"update", k, tags:cur.concat(t)}); return; }
+  if ((b = e.target.closest("[data-wsave]"))) { saveNote(b.dataset.wsave); b.textContent = "✓ Saved"; return; }
+  if ((b = e.target.closest("[data-wdel]"))) { e.stopPropagation(); wlOpen.delete(b.dataset.wdel); wlDo({op:"remove", keys:[b.dataset.wdel]}); return; }
+  const tr = e.target.closest("tr.r");
+  if (tr) { const k = tr.dataset.wk; wlOpen.has(k) ? wlOpen.delete(k) : wlOpen.add(k); if (wlOpen.has(k)) loadWlHist(); renderWl(); }
+});
+$("wlbody").addEventListener("focusout", e => {
+  if (e.target.matches("textarea[data-k]")) saveNote(e.target.dataset.k);
+  setTimeout(() => { if (wlDirty && !(document.activeElement && document.activeElement.closest && document.activeElement.closest("#wlbody textarea, #wlbody input"))) renderWl(); }, 0);
+});
+$("wlq").addEventListener("input", () => { wlLimit = 100; renderWl(); });
+$("wlsort").addEventListener("input", () => { wlLimit = 100; renderWl(); });
+$("wlmore").onclick = () => { wlLimit += 100; renderWl(); };
+function loadWlHist(){
+  if (wlHist) return;
+  wlHist = {dates:[], r:{}};
+  fetch("wl_hist.json").then(r => r.ok ? r.json() : null).then(j => { if (j) { wlHist = j; if (!$("v-wl").hidden) renderWl(); } }).catch(() => {});
+}
+
+// --- Google Sheet connection
+$("wlconnect").onclick = () => {
+  const url = $("wlurl").value.trim(), key = $("wlkey").value.trim();
+  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) { wlStatus("⚠ URL https://script.google.com/macros/s/…/exec jaisa hona chahiye"); return; }
+  store.set(WLK.api, JSON.stringify({url, key}));
+  if (WL.size) { wlQueue.unshift({op:"add", items:[...WL.values()]}); wlSaveQueue(); }  // copy what is already in this browser into the Sheet
+  wlErr = ""; wlSync();
+};
+$("wldisc").onclick = () => { if (confirm("Sheet se connection hatana hai? Watchlist ki copy is browser mein rahegi.")) { store.set(WLK.api, ""); wlQueue = []; wlSaveQueue(); wlErr = ""; wlRefresh(); } };
+$("wlexport").onclick = () => {
+  const q = v => `"${String(v??"").replace(/"/g,'""')}"`;
+  const lines = [["Rank","Symbol","Exchange","Name","Score","Close","Chg_1D","Tags","Notes","Added"].join(",")].concat(wlFiltered(wlRanks()).map(k => {
+    const it = WL.get(k), s = BYK.get(k) || {ch:{}};
+    return [RANK.get(k)||"", it.sym, it.ex, s.n||it.name, s.ms, s.c, s.ch["1D"], (it.tags||[]).join("; "), it.notes, it.added].map(q).join(","); }));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([lines.join("\n")], {type:"text/csv"}));
+  a.download = `watchlist_${M.asOf.replace(/ /g,"")}.csv`; a.click();
+};
+$("wlclear").onclick = () => { if (WL.size && confirm(`Saare ${WL.size} stocks (notes aur tags ke saath) hat jayenge. Pakka?`)) wlDo({op:"remove", keys:[...WL.keys()]}); };
+
+function wlInit(){
+  const c = jget(WLK.cache, null);
+  if (c && c.items) { WL = new Map(c.items.map(i => [i.k, i])); wlSynced = c.synced || null; }
+  wlQueue = jget(WLK.queue, []);
+  const a = wlApi();
+  if (a) { $("wlurl").value = a.url || ""; $("wlkey").value = a.key || ""; }
+  else $("wlsetup").open = false;
+  if (!WL.size) $("wladd").open = true;
+  wlRefresh(); wlSync();
+  window.addEventListener("online", () => wlSync());
+}
+
 function showView(v){
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
-  $("v-scan").hidden = v!=="scan"; $("v-pf").hidden = v!=="pf";
+  $("v-scan").hidden = v!=="scan"; $("v-pf").hidden = v!=="pf"; $("v-wl").hidden = v!=="wl";
   store.set("view", v);
+  if (v==="wl") renderWl();
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
+wlInit();
 render();
-showView(store.get("view")==="pf" ? "pf" : "scan");
+showView(["pf","wl"].includes(store.get("view")) ? store.get("view") : "scan");
 $("fsclose").onclick = closeFull;
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("fs").hidden) closeFull(); });
 loadPortfolio().then(() => { if (location.hash.startsWith("#c=")) openFull(decodeURIComponent(location.hash.slice(3))); });
