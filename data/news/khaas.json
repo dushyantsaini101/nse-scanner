@@ -1,6 +1,6 @@
 {
 "date": "2026-11-06",
-"updated": "2026-11-06T16:28",
+"updated": "2026-11-06T16:52",
 "final": false,
 "site": "https://dushyantsaini101.github.io/nse-scanner/",
 "items": [
@@ -39,6 +39,17 @@
 },
 {
 "why": "Results",
+"k": "B_540788",
+"sym": "540788",
+"score": 71,
+"chg": -1.1,
+"t": "2026-11-06T16:50",
+"title": "Enclosed herewith Financial Result for the Half Year ended 30th September 2026",
+"url": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/6bddf715-a600-4324-ab97-7f9d8f4ff199.pdf",
+"src": "BSE"
+},
+{
+"why": "Results",
 "k": "N_VIVO",
 "sym": "VIVO",
 "score": 70,
@@ -69,6 +80,17 @@
 "title": "Press release dated November 06, 2026, titled \"Press Release titled Un-audited Standalone and Consolidated Financial Results for the half year ended September 30, 2026 \".",
 "url": "https://nsearchives.nseindia.com/corporate/PAL_06112026151300_ilovepdf_merged__20_.pdf",
 "src": "NSE SME"
+},
+{
+"why": "Results",
+"k": "N_GLAND",
+"sym": "GLAND",
+"score": 62,
+"chg": -0.44,
+"t": "2026-11-06T16:33",
+"title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
+"url": "https://nsearchives.nseindia.com/corporate/GLAND_06112026162953_OutcomeBMQ2FY27_Final.pdf",
+"src": "NSE"
 },
 {
 "why": "Results",
