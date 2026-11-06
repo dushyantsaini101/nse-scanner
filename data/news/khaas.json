@@ -1,9 +1,20 @@
 {
 "date": "2026-11-06",
-"updated": "2026-11-06T13:12",
+"updated": "2026-11-06T14:22",
 "final": false,
 "site": "https://dushyantsaini101.github.io/nse-scanner/",
 "items": [
+{
+"why": "Results",
+"k": "N_NUVAMA",
+"sym": "NUVAMA",
+"score": 61,
+"chg": 1.46,
+"t": "2026-11-06T14:03",
+"title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
+"url": "https://nsearchives.nseindia.com/corporate/NWML_06112026140112_SE_BMOutcome_30092026.pdf",
+"src": "NSE"
+},
 {
 "why": "Results",
 "k": "N_SAILIFE",
