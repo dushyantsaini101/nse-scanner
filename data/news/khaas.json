@@ -1,6 +1,6 @@
 {
 "date": "2026-11-06",
-"updated": "2026-11-06T14:51",
+"updated": "2026-11-06T15:26",
 "final": false,
 "site": "https://dushyantsaini101.github.io/nse-scanner/",
 "items": [
@@ -14,6 +14,39 @@
 "title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
 "url": "https://nsearchives.nseindia.com/corporate/BOSCHLTD2025_06112026143420_Letter2SE06112026.pdf",
 "src": "NSE"
+},
+{
+"why": "Results",
+"k": "B_524336",
+"sym": "524336",
+"score": 77,
+"chg": 2.1,
+"t": "2026-11-06T14:55",
+"title": "Un-audited Financial Results for the quarter and half year ended 30.09.2026",
+"url": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/582bbfe8-4cea-47ca-a68c-2f33937827d0.pdf",
+"src": "BSE"
+},
+{
+"why": "Results",
+"k": "N_VIVO",
+"sym": "VIVO",
+"score": 70,
+"chg": 2.88,
+"t": "2026-11-06T15:07",
+"title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
+"url": "https://nsearchives.nseindia.com/corporate/VIVO_06112026150522_OUTCOME_RESULT.pdf",
+"src": "NSE SME"
+},
+{
+"why": "Results",
+"k": "N_PATILAUTOM",
+"sym": "PATILAUTOM",
+"score": 66,
+"chg": 3.03,
+"t": "2026-11-06T15:13",
+"title": "Press release dated November 06, 2026, titled \"Press Release titled Un-audited Standalone and Consolidated Financial Results for the half year ended September 30, 2026 \".",
+"url": "https://nsearchives.nseindia.com/corporate/PAL_06112026151300_ilovepdf_merged__20_.pdf",
+"src": "NSE SME"
 },
 {
 "why": "Results",
