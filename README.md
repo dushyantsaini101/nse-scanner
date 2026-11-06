@@ -29,12 +29,17 @@ Run locally: `pip install requests` then `python nse_scanner.py`.
 - **NEW** label for 30 days after a stock joins a fixed list; "Aaj ke badlav" box shows today's additions/removals.
 
 **My lists**: Watchlist 1–5 (up to 1000 stocks each) — paste, CSV import (Kite), **+ WL** in the scanner (choose 1–5).
+**Name search** (in "+ Stocks add karo" and the scanner's **+ WL**): live suggestions by company name, NSE/BSE symbol or
+BSE scrip code (NSE stocks too), mainboard + SME; ignores case, spaces, dots and Ltd/Limited, and allows small spelling
+mistakes. In the paste box, words that are not exact symbols are matched as names; several matches are shown as choices.
 Remove with checkboxes / Sab clear karo, 10-second Undo. Stocks removed from Watchlist 1–5 do not go to Old.
 
 **Mode chips**: any mix of fixed lists, Watchlist 1–5 and Old; rank and rank change are worked out among the
 stocks on screen. **Tags**: auto tags from daily data (Darvas Breakout, Near Darvas Top ≤3%, Volume Spike ≥2× 20-day
 average, Near 52W High ≤5%, IPO Base) and my tags (Watch Closely, PEAD, custom); multi-select, any match.
-**Sort**: score, % changes, volume, volume spike, turnover, distance from 52W high, rank gain, price, name,
+**% change period** (dropdown above the price column, remembered): 1/2/3/4 din, 1/2 hafte, 1/3 mahine — trading
+sessions back, from adjusted closing prices; the "% change" sort and the ticker follow it.
+**Sort**: score, % change, volume, volume spike, turnover, distance from 52W high, rank gain, price, name,
 IPO listing date / % vs issue — with ascending/descending, remembered.
 
 **Momentum Score 0–100**, recalculated daily from end-of-day data (also a column / sort in the scanner):
