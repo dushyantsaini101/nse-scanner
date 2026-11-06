@@ -1,6 +1,6 @@
 {
 "date": "2026-11-06",
-"updated": "2026-11-06T15:56",
+"updated": "2026-11-06T16:28",
 "final": false,
 "site": "https://dushyantsaini101.github.io/nse-scanner/",
 "items": [
@@ -28,6 +28,17 @@
 },
 {
 "why": "Results",
+"k": "N_LAMBODHARA",
+"sym": "LAMBODHARA",
+"score": 71,
+"chg": 6.13,
+"t": "2026-11-06T16:20",
+"title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
+"url": "https://nsearchives.nseindia.com/corporate/LAMBODHARA_06112026161829_BMOUTCOME_06112026.pdf",
+"src": "NSE"
+},
+{
+"why": "Results",
 "k": "N_VIVO",
 "sym": "VIVO",
 "score": 70,
@@ -36,6 +47,17 @@
 "title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
 "url": "https://nsearchives.nseindia.com/corporate/VIVO_06112026150522_OUTCOME_RESULT.pdf",
 "src": "NSE SME"
+},
+{
+"why": "Results",
+"k": "B_514414",
+"sym": "514414",
+"score": 70,
+"chg": 1.86,
+"t": "2026-11-06T16:20",
+"title": "ENCLOSED HEREWITH OUTCOME OF BOARD MEETING ALONGWITH UNAUDITED FINANCIAL RESULTS FOR QUARTER AND HALF YEAR ENDED 30/09/2026.",
+"url": "https://www.bseindia.com/xml-data/corpfiling/AttachLive/1f93086b-ee7a-4e73-acf4-fac1f79cb304.pdf",
+"src": "BSE"
 },
 {
 "why": "Results",
