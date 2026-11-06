@@ -1,9 +1,20 @@
 {
 "date": "2026-11-06",
-"updated": "2026-11-06T14:22",
+"updated": "2026-11-06T14:51",
 "final": false,
 "site": "https://dushyantsaini101.github.io/nse-scanner/",
 "items": [
+{
+"why": "Results",
+"k": "N_BOSCHLTD",
+"sym": "BOSCHLTD",
+"score": 83,
+"chg": 3.04,
+"t": "2026-11-06T14:35",
+"title": "Outcome of Board Meeting: Financial results for the period ended September 30, 2026.",
+"url": "https://nsearchives.nseindia.com/corporate/BOSCHLTD2025_06112026143420_Letter2SE06112026.pdf",
+"src": "NSE"
+},
 {
 "why": "Results",
 "k": "N_NUVAMA",
