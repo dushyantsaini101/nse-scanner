@@ -598,6 +598,10 @@ def main():
     mom_prev, bench = add_momentum(stocks, index_members)
     print(f"  benchmark (Nifty 50 equal-weight) 3M: today {bench[0]}%, previous session {bench[1]}%")
 
+    print("Fixed lists…")
+    fixed, ipo_info = build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list, charts)
+    lists, changes = track_changes(fixed, ipo_info, latest_day, nse_days, bse_days)
+
     counts = {}
     for s in stocks:
         counts[s["seg"]] = counts.get(s["seg"], 0) + 1
@@ -615,17 +619,18 @@ def main():
         "adjustments": len(adj_log),
         "prevAsOf": prev_day.strftime("%d %b %Y") if prev_day else "",
         "bench3M": bench[0],
+        "asOfISO": latest_day.isoformat(),
     }
 
     html = TEMPLATE.replace("/*__DATA__*/", json.dumps(
-        {"meta": meta, "stocks": stocks, "indices": index_members, "mprev": mom_prev, "fo": fo_list},
+        {"meta": meta, "stocks": stocks, "indices": index_members, "mprev": mom_prev,
+         "lists": lists, "ipo": ipo_info, "chg": changes},
         separators=(",", ":")))
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(html)
     write_app_files(os.path.dirname(OUT))
     write_charts(os.path.dirname(OUT), charts)
     write_csv(stocks, index_members, meta)
-    watchlist_history(stocks, mom_prev, latest_day, os.path.dirname(OUT))
     with open(os.path.join(DATA_DIR, "adjustments.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["Date", "Symbol", "Exchange", "BSE_Code", "Price_factor"])
@@ -706,64 +711,223 @@ def add_momentum(stocks, index_members):
     return prev, (b_now, b_prev)
 
 
-def rank_order(keys, score, sym):
-    """Watchlist ranking: highest score first, ties by symbol (the page uses the same rule)."""
-    return sorted(keys, key=lambda k: (-score[k], sym.get(k, k)))
+# ---------------------------------------------------------------- fixed lists + change log
+
+FIXED = [("n50", "Nifty 50"), ("n500", "Nifty 500"), ("fo", "F&O"),
+         ("nsme", "NSE SME"), ("bsme", "BSE SME"), ("ipo", "IPO")]
+RECENT = 10          # a stock belongs to the SME lists if it traded in the last 10 sessions (SME stocks skip days)
+CHANGE_LOG = "list_changes.csv"
+LIST_STATE = "fixed_lists.json"
 
 
-def watchlist_history(stocks, mom_prev, latest_day, site):
-    """Daily watchlist rank history, kept in the repository (data/watchlist_ranks.csv).
-    Needs the WATCHLIST_URL secret (Apps Script web app link with ?key=...). Also writes wl_hist.json for the page."""
-    path = os.path.join(DATA_DIR, "watchlist_ranks.csv")
-    head = ["Date", "Rank", "Symbol", "Exchange", "Key", "Score", "Prev_Rank", "Rank_Change"]
-    rows = []
-    if os.path.exists(path):
-        with open(path, newline="", encoding="utf-8") as f:
-            rows = [r for r in csv.DictReader(f)]
-    url = os.environ.get("WATCHLIST_URL", "").strip()
-    keys = None
-    if not url:
-        print("Watchlist: WATCHLIST_URL not set — skipping rank history")
-    else:
+def load_nse_ipos():
+    """NSE past issues (mainboard + SME): {symbol: (listing date, issue price)}. Cached copy if NSE refuses."""
+    cache_file = os.path.join(CACHE, "nse_past_issues.json")
+    data = None
+    if not (os.path.exists(cache_file) and time.time() - os.path.getmtime(cache_file) < 20 * 3600):
+        raw, _ = fetch("https://www.nseindia.com/api/public-past-issues",
+                       headers={**NSE_HEADERS, "Accept": "application/json, text/plain, */*"})
         try:
-            resp = requests.get(url, timeout=60)
-            data = resp.json()
-            if not data.get("ok"):
-                raise ValueError(data.get("error", "bad reply"))
-            # rank history is kept for "Meri list" (stocks added by hand); older sheets have no mine/hidden fields
-            keys = list(dict.fromkeys(it["k"] for it in data.get("items", [])
-                                      if it.get("k") and it.get("mine", True) is not False and not it.get("hidden")))
-            print(f"Watchlist: {len(keys)} 'Meri list' stocks from Google Sheet")
-        except Exception as e:  # never fail the scanner because of the watchlist
-            print(f"Watchlist: could not read the Google Sheet ({type(e).__name__}: {e}) — skipping rank history")
-    if keys:
-        byk = {s["k"]: s for s in stocks}
-        sym = {k: s["s"] for k, s in byk.items()}
-        today = rank_order([k for k in keys if k in byk], {k: byk[k]["ms"] for k in byk}, sym)
-        before = rank_order([k for k in keys if k in mom_prev], mom_prev, sym)
-        prank = {k: i + 1 for i, k in enumerate(before)}
-        iso = latest_day.isoformat()
-        rows = [r for r in rows if r["Date"] != iso]
-        for i, k in enumerate(today):
-            s, pr = byk[k], prank.get(k)
-            rows.append({"Date": iso, "Rank": i + 1, "Symbol": s["s"], "Exchange": "BSE" if s["x"] == "B" else "NSE",
-                         "Key": k, "Score": s["ms"], "Prev_Rank": pr or "", "Rank_Change": (pr - i - 1) if pr else ""})
-        dates = sorted({r["Date"] for r in rows})[-400:]
-        keep = set(dates)
-        rows = sorted((r for r in rows if r["Date"] in keep), key=lambda r: (r["Date"], int(r["Rank"])), reverse=False)
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=head)
-            w.writeheader()
-            w.writerows(rows)
-    # last 30 days of ranks for the page
-    dates = sorted({r["Date"] for r in rows})[-30:]
-    pos = {d: i for i, d in enumerate(dates)}
-    ranks = {}
+            data = json.loads(raw) if raw else None
+            if isinstance(data, list) and len(data) > 100:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+            else:
+                data = None
+        except ValueError:
+            data = None
+    if data is None and os.path.exists(cache_file):
+        with open(cache_file, encoding="utf-8") as f:
+            data = json.load(f)
+    if not data:
+        return None
+    out = {}
+    for x in data:
+        if str(x.get("securityType", "")).strip() not in ("EQ", "BE", "BZ", "SME"):
+            continue
+        try:
+            ld = datetime.strptime(str(x.get("listingDate", "")).strip(), "%d-%b-%Y").date()
+        except ValueError:
+            continue
+        sym = str(x.get("symbol", "")).strip().upper()
+        price = num(str(x.get("issuePrice", "")).replace("Rs.", ""))
+        if sym and (sym not in out or ld > out[sym][0]):
+            out[sym] = (ld, price)
+    return out
+
+
+def build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list, charts):
+    """Today's members of the fixed lists: {list: {key: symbol}} (None = source unavailable today),
+    and IPO details {key: [listing date, issue price or None, listing-day open]}."""
+    latest = nse_days[-1][1]
+    nkey = lambda sym: "N_" + re.sub(r"[^A-Za-z0-9_-]", "_", sym)
+    fixed = {}
+    for lid, label in (("n50", "Nifty 50"), ("n500", "Nifty 500")):
+        syms = index_members.get(label)
+        fixed[lid] = {nkey(s): s for s in syms if s in latest} if syms else None
+    fixed["fo"] = {nkey(s): s for s in fo_list} if fo_list else None
+    nsme = {}
+    for _, rows in nse_days[-RECENT:]:
+        for r in rows.values():
+            if r["series"] in NSE_SME:
+                nsme[chart_id("nse", r)] = r["sym"]
+    fixed["nsme"] = nsme or None
+    bsme = {}
+    for _, rows in bse_days[-RECENT:]:
+        for r in rows.values():
+            if r["series"] in BSE_SME:
+                bsme[chart_id("bse", r)] = r["sym"]
+    fixed["bsme"] = bsme or None
+
+    # IPOs listed in the last 365 days: NSE's official list; BSE-only listings from their first trading day
+    cutoff = latest_day - timedelta(days=365)
+    recent = set()
+    for _, rows in nse_days[-RECENT:]:
+        recent.update(chart_id("nse", r) for r in rows.values())
+    for _, rows in bse_days[-RECENT:]:
+        recent.update(chart_id("bse", r) for r in rows.values())
+    first = {}                                # key -> (first trading day, open that day, symbol)
+    for ex, days in (("nse", nse_days), ("bse", bse_days)):
+        for d, rows in days:
+            for r in rows.values():
+                k = chart_id(ex, r)
+                if k not in first:
+                    first[k] = (d, r["o"], r["sym"])
+    def split_factor_since_listing(k):
+        """Prices on the page are adjusted for splits/bonuses; scale the issue price the same way."""
+        f0, recs = first.get(k), charts.get(k)
+        if f0 and recs and recs[0][0] == f0[0] and f0[1]:
+            return recs[0][1] / f0[1]
+        return 1.0
+
+    ipo, info = {}, {}
+    nse_ipos = load_nse_ipos()
+    if nse_ipos is None:
+        print("  NSE IPO list unavailable — IPO list kept from the previous run")
+    else:
+        for sym, (ld, price) in nse_ipos.items():
+            k = nkey(sym)
+            if cutoff < ld <= latest_day and k in recent:
+                ipo[k] = sym
+                f0, adj = first.get(k), split_factor_since_listing(k)
+                info[k] = [ld.isoformat(), r2(price * adj) if price else None, r2(f0[1] * adj) if f0 else None]
+    # BSE-only listings: first trading day inside our history. Only new scrip codes (54xxxx) — old codes
+    # appearing late are old companies resuming trade after a suspension, not IPOs.
+    for k, (d, o, sym) in first.items():
+        if (k.startswith("B_54") and k in recent and d > cutoff and d > sessions[0] + timedelta(days=7)):
+            ipo[k] = sym
+            info[k] = [d.isoformat(), None, r2(o * split_factor_since_listing(k))]
+    fixed["ipo"] = ipo if nse_ipos is not None else None
+    print("  " + ", ".join(f"{lid}: {'—' if v is None else len(v)}" for lid, v in fixed.items()))
+    return fixed, info
+
+
+def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
+    """Compares today's fixed lists with the previous trading day, appends additions / removals to
+    data/list_changes.csv and keeps today's lists in data/fixed_lists.json (both public market facts).
+    Returns (lists for the page, changes for the page)."""
+    state_path, log_path = os.path.join(DATA_DIR, LIST_STATE), os.path.join(DATA_DIR, CHANGE_LOG)
+    iso = latest_day.isoformat()
+    state = None
+    if os.path.exists(state_path):
+        with open(state_path, encoding="utf-8") as f:
+            state = json.load(f)
+    # re-running on the same trading day compares with the same earlier base again
+    if state and state.get("date") == iso:
+        base, base_date, base_miss, base_ipo = (state.get("base"), state.get("base_date"),
+                                                state.get("base_miss") or {}, state.get("base_ipo") or {})
+    elif state:
+        base, base_date, base_miss, base_ipo = (state.get("lists"), state.get("date"),
+                                                state.get("miss") or {}, state.get("ipo_dates") or {})
+    else:
+        base, base_date, base_miss, base_ipo = None, None, {}, {}
+    main_now = {chart_id("nse", r) for r in nse_days[-1][1].values() if r["series"] in NSE_MAIN}
+    cutoff = (latest_day - timedelta(days=365)).isoformat()
+    ipo_dates = {**base_ipo, **{k: v[0] for k, v in ipo_info.items()}}
+    today, miss = {}, {}
+    for lid, label in FIXED:
+        new, old = fixed.get(lid), (base or {}).get(lid)
+        if new is None:
+            if old is not None:
+                print(f"  {label}: source unavailable today, keeping the previous list")
+            new = old or {}
+        elif old and len(new) < 0.8 * len(old):
+            print(f"  {label}: only {len(new)} vs {len(old)} yesterday — looks like a data problem, keeping the previous list")
+            new = old
+        new = dict(new)
+        if lid in ("nsme", "bsme", "ipo") and old:
+            # illiquid stocks skip days: they leave only after RECENT sessions without a trade,
+            # unless the reason is clear (moved to mainboard, IPO older than a year)
+            for k in set(old) - set(new):
+                if (lid == "nsme" and k in main_now) or (lid == "ipo" and ipo_dates.get(k, "9") <= cutoff):
+                    continue
+                c = (base_miss.get(lid) or {}).get(k, 0) + 1
+                if c < RECENT:
+                    new[k] = old[k]
+                    miss.setdefault(lid, {})[k] = c
+        today[lid] = new
+
+    traded_recent = set()
+    for _, rows in nse_days[-RECENT:]:
+        traded_recent.update(chart_id("nse", r) for r in rows.values())
+    for _, rows in bse_days[-RECENT:]:
+        traded_recent.update(chart_id("bse", r) for r in rows.values())
+
+    rows = []
+    if os.path.exists(log_path):
+        with open(log_path, newline="", encoding="utf-8") as f:
+            rows = [r for r in csv.DictReader(f) if r["Date"] != iso]
+    if base is not None:
+        added = removed = 0
+        for lid, label in FIXED:
+            old, new = base.get(lid) or {}, today[lid]
+            for k in sorted(set(new) - set(old)):
+                rows.append({"Date": iso, "List": label, "Change": "added", "Symbol": new[k],
+                             "Exchange": "BSE" if k.startswith("B_") else "NSE", "Key": k, "Reason": ""})
+                added += 1
+            for k in sorted(set(old) - set(new)):
+                if lid == "ipo" and ipo_dates.get(k, "9") <= cutoff:
+                    why = "1 saal pura"
+                elif lid == "nsme" and k in main_now:
+                    why = "mainboard pe migrate"
+                elif k not in traded_recent or (base_miss.get(lid) or {}).get(k):
+                    why = "trading band / delist"
+                else:
+                    why = ""
+                rows.append({"Date": iso, "List": label, "Change": "removed", "Symbol": old[k],
+                             "Exchange": "BSE" if k.startswith("B_") else "NSE", "Key": k, "Reason": why})
+                removed += 1
+        print(f"  changes vs {base_date}: {added} added, {removed} removed")
+    else:
+        print("  first run: lists saved, changes start from the next trading day")
+    with open(log_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["Date", "List", "Change", "Symbol", "Exchange", "Key", "Reason"])
+        w.writeheader()
+        w.writerows(sorted(rows, key=lambda r: (r["Date"], r["List"], r["Change"], r["Symbol"])))
+    with open(state_path, "w", encoding="utf-8") as f:
+        json.dump({"date": iso, "lists": today, "miss": miss,
+                   "ipo_dates": {k: v for k, v in ipo_dates.items() if k in today["ipo"]},
+                   "base_date": base_date, "base": base, "base_miss": base_miss, "base_ipo": base_ipo},
+                  f, separators=(",", ":"))
+
+    # for the page: members, today's changes, NEW (added in the last 30 days), every removal (Old list)
+    since = (latest_day - timedelta(days=30)).isoformat()
+    lab2id = {label: lid for lid, label in FIXED}
+    chg = {"today": [], "new": {}, "exits": []}
     for r in rows:
-        if r["Date"] in pos:
-            ranks.setdefault(r["Key"], [None] * len(dates))[pos[r["Date"]]] = int(r["Rank"])
-    with open(os.path.join(site, "wl_hist.json"), "w", encoding="utf-8") as f:
-        json.dump({"dates": dates, "r": ranks}, f, separators=(",", ":"))
+        lid = lab2id.get(r["List"])
+        if not lid:
+            continue
+        if r["Change"] == "removed":
+            chg["exits"].append([r["Date"], lid, r["Key"], r["Symbol"], r["Reason"]])
+        elif r["Date"] > since:
+            chg["new"].setdefault(r["Key"], []).append([lid, r["Date"]])
+        if r["Date"] == iso:
+            chg["today"].append([lid, "+" if r["Change"] == "added" else "-", r["Key"], r["Symbol"], r["Reason"]])
+    for k in today["ipo"]:                    # kept for a few quiet days: still show the listing date
+        ipo_info.setdefault(k, [ipo_dates.get(k), None, None])
+    lists = {lid: sorted(today[lid]) for lid, _ in FIXED}
+    return lists, chg
 
 
 def chart_id(ex, r):
@@ -970,6 +1134,19 @@ input.selcb{width:18px;height:18px;margin:0 0 4px;cursor:pointer;display:block;m
 tr.selr td{background:var(--accbg)}
 #undo{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;display:flex;gap:12px;align-items:center;background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.25);max-width:calc(100% - 32px);font-size:13px}
 #undo .btn{background:transparent;color:var(--bg);border-color:var(--bg);font-weight:700}
+.mlab{font-size:12px;color:var(--mute);margin:12px 0 6px;font-weight:600} .mlab small{font-weight:400}
+.tag.new{background:var(--ambbg);color:var(--amb);font-weight:700}
+.tag.w{background:var(--accbg);color:var(--acc)}
+.tag.old{background:var(--dnbg);color:var(--dn)}
+.tag.a{background:var(--upbg);color:var(--up);font-size:11px}
+small.ipol{display:block;color:var(--mute);font-size:11px;margin-top:2px}
+.sortrow{display:flex;gap:6px}
+.chgrow{margin-top:10px} .chgrow b{display:block;font-size:12px;margin-bottom:4px}
+button.tg.addc{color:var(--up)} button.tg.remc{color:var(--dn)}
+.livedot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--up);vertical-align:middle}
+#pick{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.35);display:flex;align-items:flex-end;justify-content:center}
+#pick .pickbox{background:var(--card);border-radius:14px 14px 0 0;padding:16px;width:100%;max-width:520px;box-shadow:0 -4px 20px rgba(0,0,0,.2)}
+#pick button.tg{padding:9px 14px;font-size:14px}
 @media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .chart.withrsi{height:350px} .stat b{font-size:16px} .stat{min-width:96px}}
 </style></head><body>
 <div id="fs" hidden><div class="fshead"><span id="fsname"></span><span class="cbtns"><a id="fsnew" target="_blank" rel="noopener">Naye tab mein ↗</a><a id="fstv" target="_blank" rel="noopener">TradingView ↗</a><button class="btn sm" id="fsclose">✕ Band karo</button></span></div><div class="indbar" id="fsind"></div><div id="fschart"></div><div class="chartbar"><span id="fsleg"></span></div></div>
@@ -980,41 +1157,45 @@ tr.selr td{background:var(--accbg)}
 <nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="wl">Watchlist</button><button data-v="pf">Mera Portfolio</button></nav></header>
 <div class="wrap" id="v-wl" hidden>
   <div class="panel">
-    <div class="row" style="justify-content:space-between;align-items:center"><b>Mera Watchlist</b><span class="sub" id="wlsync"></span></div>
-    <div class="hint" style="margin-top:10px">Aaj ka mode: jo groups chahiye unhe on karo (ek se zyada bhi)</div>
-    <div class="chips" id="wlmode" style="margin-top:6px"></div>
-    <details id="wladd"><summary>+ Stocks add karo (Meri list)</summary>
-      <div class="hint">Symbols paste karo, kisi bhi format mein: <b>RELIANCE, NSE:TCS, BSE:500325</b>. Comma, space ya nayi line se alag karo. Scanner tab mein har stock pe <b>+ WL</b> button bhi hai. Ye sab <b>Meri list</b> mein jaate hain.</div>
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Watchlist</b><span class="sub" id="wlsync"></span></div>
+    <div class="mlab">Fixed lists <small>· roz apne aap update · jo dekhna hai on karo</small></div>
+    <div class="chips" id="wlmodeF"></div>
+    <div class="mlab">Meri lists</div>
+    <div class="chips" id="wlmodeM"></div>
+    <details id="wladd"><summary>+ Stocks add karo</summary>
+      <div class="row"><label class="l">Kis list mein?<select id="wltarget"></select></label></div>
+      <div class="hint">Symbols paste karo, kisi bhi format mein: <b>RELIANCE, NSE:TCS, BSE:500325</b>. Comma, space ya nayi line se alag karo. Scanner tab mein har stock pe <b>+ WL</b> button bhi hai. Har list mein 1000 tak stocks.</div>
       <textarea id="wlpaste" rows="3" placeholder="RELIANCE, NSE:TCS&#10;BSE:500325"></textarea>
       <div class="row"><button class="btn" id="wlpastebtn">Add karo</button>
         <label class="btn">CSV import (Kite etc.)<input type="file" id="wlcsv" accept=".csv,.txt,text/csv" hidden></label></div>
-      <div class="row"><label class="l grow">Kisi index ke saare stocks Meri list mein<select id="wlidx"></select></label><button class="btn" id="wlidxbtn">Index add karo</button></div>
       <div class="hint" id="wlmsg"></div>
     </details>
     <details id="wlrm"><summary>Hatao / clear</summary>
-      <div class="hint">Stocks hatane ke liye list mein checkbox lagao, phir <b>Selected hatao</b>. Hatane ke baad 10 second tak <b>Undo</b> milta hai. Notes aur tags kabhi delete nahi hote.</div>
-      <div class="row"><label class="l grow">Poora group hatao<select id="wlgdel"></select></label><button class="btn" id="wlgdelbtn">Group hatao</button></div>
-      <div class="row"><button class="btn" id="wlclear">Sab clear karo</button></div>
+      <div class="hint">Watchlist 1–5 aur "Hataye gaye" list se stocks hata sakte ho: list on karo, rows pe checkbox lagao, phir <b>Selected hatao</b>. Fixed lists se kuch hataya nahi ja sakta. Har baar 10 second tak <b>Undo</b> milta hai. Notes aur tags stock ke saath rehte hain, kabhi delete nahi hote.</div>
+      <div class="row"><label class="l grow">Poori list khali karo<select id="wlclrsel"></select></label><button class="btn" id="wlclear">Sab clear karo</button></div>
     </details>
     <details id="wlsetup"><summary>Google Sheet connection</summary>
-      <div class="hint">Notes, tags aur watchlist aapki Google Sheet mein save hote hain (Apps Script web app ke through). Link aur key sirf is browser mein save hote hain.</div>
+      <div class="hint">Watchlist 1–5, hataye gaye list, notes, tags aur rank history sirf aapki Google Sheet mein save hote hain (public GitHub repo mein nahi). Sheet connect hone tak sirf is browser mein. Link aur key sirf is browser mein save hote hain.</div>
       <div class="row"><input class="url" id="wlurl" placeholder="Web app URL (https://script.google.com/macros/s/…/exec)"></div>
       <div class="row"><input class="url" id="wlkey" placeholder="Secret key (setup se mili)"><button class="btn" id="wlconnect">Connect karo</button><button class="btn" id="wldisc">Disconnect</button></div>
-      <div class="row"><button class="btn" id="wlexport">Watchlist CSV download</button></div>
+      <div class="row"><button class="btn" id="wlexport">Dikh rahe stocks ka CSV</button></div>
     </details>
   </div>
+  <details class="panel chgbox" id="wlchg" hidden><summary><b>Aaj ke badlav</b> <span class="na" id="wlchgn"></span></summary><div id="wlchglist"></div></details>
   <div class="panel new20" id="wlnew" hidden><b>New in Top 20 today</b><div class="chips" id="wlnewlist" style="margin-top:8px"></div></div>
   <div class="panel">
     <div class="row"><input type="search" id="wlq" placeholder="Search symbol, naam ya note…">
-      <label class="l">Sort<select id="wlsort"><option value="rank">Momentum score (rank)</option><option value="chg">Rank change (sabse upar chadhe)</option><option value="d1">Aaj ka % change</option><option value="sym">Symbol A–Z</option><option value="added">Naye add kiye pehle</option></select></label></div>
-    <div class="chips" id="wltags" style="margin-top:10px"></div>
+      <label class="l">Sort<span class="sortrow"><select id="wlsort"></select><button class="btn" id="wlasc" title="Ulta order"></button></span></label></div>
+    <div class="mlab">Auto tags <small>· roz ke data se</small></div><div class="chips" id="wltagsA"></div>
+    <div class="mlab">Mere tags</div><div class="chips" id="wltagsM"></div>
   </div>
   <div class="stats" id="wlstats"></div>
-  <div class="selbar"><label><input type="checkbox" id="wlselall"> <span id="wlsellab">Sab select karo</span></label><button class="btn sm" id="wlseldel" disabled>Selected hatao</button></div>
+  <div class="selbar" id="wlselbar"><label><input type="checkbox" id="wlselall"> <span id="wlsellab">Sab select karo</span></label><button class="btn sm" id="wlseldel" disabled>Selected hatao</button></div>
   <div class="tbl"><table><thead><tr id="wlhead"></tr></thead><tbody id="wlbody"></tbody></table>
   <div class="pager"><span id="wlinfo"></span><span><button class="btn" id="wlmore">Aur dikhao</button></span></div></div>
   <div class="foot" id="wlfoot"></div>
 </div>
+<div id="pick" hidden><div class="pickbox"><div id="pickt"></div><div class="chips" id="pickl" style="margin:10px 0"></div><button class="btn" id="pickx">Ho gaya</button></div></div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
     <b>Portfolio sheet ka link</b>
@@ -1673,7 +1854,6 @@ function renderPf(){
 }
 $("pfsave").onclick = () => { store.set("pf_url", $("pfurl").value.trim()); loadPortfolio(); };
 // ---------- watchlist (Google Sheet via Apps Script, with a local copy for offline use)
-const DEF_TAGS = ["Darvas","IPO Base","PEAD","SME","Watch Closely"];
 const MP = D.mprev || {};
 const BYCODE = new Map(S.filter(s => s.code).map(s => [String(s.code), s]));
 const cmpStr = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -1704,50 +1884,81 @@ const MOM_PARTS = [
 ];
 const WLK = {cache:"wl_cache", queue:"wl_queue", api:"wl_api"};
 const jget = (k, d) => { try { const v = JSON.parse(store.get(k) || "null"); return v == null ? d : v; } catch(e){ return d; } };
-let WL = new Map(), wlQueue = [], wlOpen = new Set(), wlSel = new Set(), wlLimit = 100, wlTag = "", wlBusy = false, wlAgain = false, wlErr = "", wlSynced = null, wlDirty = false;
-let RANK = new Map(), PRANK = new Map(), wlHist = null, wlVisible = [];
+let WL = new Map(), wlQueue = [], wlOpen = new Set(), wlSel = new Set(), wlLimit = 100, wlBusy = false, wlAgain = false, wlErr = "", wlSynced = null, wlDirty = false;
+let RANK = new Map(), PRANK = new Map(), wlVisible = [], wlTags = new Set(), wlForce = "", wlVer = 0;
+const ISO = M.asOfISO || "", MAXW = 1000;
+const dayNum = iso => Math.floor(Date.parse(iso + "T00:00:00Z") / 864e5);
+const fdIso = iso => iso ? fdate(Date.parse(iso + "T00:00:00Z")) : "—";
 
-// Item: {k, sym, ex, name, added, notes, tags, mine (in "Meri list"), hidden (removed from the watchlist, notes kept)}
-const norm = it => Object.assign(it, {notes: it.notes || "", tags: it.tags || [], mine: it.mine !== false, hidden: !!it.hidden});
-const blank = k => { const s = BYK.get(k) || {}; return {k, sym:s.s||k, ex:s.x==="B"?"BSE":"NSE", name:s.n||"", notes:"", tags:[], mine:false, hidden:false}; };
-const getIt = k => WL.get(k) || blank(k);
-
-// ---- ready-made groups (rebuilt every day by the workflow) + "Meri list"
-const GROUPS = [["fo","F&O"],["nsme","NSE SME"],["bsme","BSE SME"],["n50","Nifty 50"],["n500","Nifty 500"],["mine","Meri list"]];
-const GNAME = Object.fromEntries(GROUPS);
-const GLABEL = {fo:"F&O", nsme:"SME", bsme:"BSE SME", n50:"N50", n500:"N500", mine:"Meri list"};
-const idxKeys = name => (IDX[name] || []).map(sym => BYSYM.get("N:" + sym.toUpperCase())).filter(Boolean).map(s => s.k);
-const GSET = {
-  fo: new Set((D.fo || []).map(sym => BYSYM.get("N:" + sym)).filter(Boolean).map(s => s.k)),
-  nsme: new Set(S.filter(s => s.seg === "NSE SME").map(s => s.k)),
-  bsme: new Set(S.filter(s => s.seg === "BSE SME").map(s => s.k)),
-  n50: new Set(idxKeys("Nifty 50")),
-  n500: new Set(idxKeys("Nifty 500")),
+// ---- prices. End-of-day by default. Phase 2 (live feed, e.g. Dhan via your own server) only has to call
+//   LIVE_FEED.update({"N_RELIANCE": {ltp: 1501.2, prev: 1480}, ...})
+// and LIVE_FEED.symbols() tells it which stocks are on screen. Score / rank stay end-of-day.
+const LIVE = new Map();
+function px(s){ const l = LIVE.get(s.k); return l && l.ltp ? {c:l.ltp, d1:l.prev ? (l.ltp/l.prev - 1)*100 : s.ch["1D"], live:true} : {c:s.c, d1:s.ch["1D"], live:false}; }
+const pxCell = s => { const p = px(s); return `${fmt(p.c)}${p.live?' <span class="livedot" title="live"></span>':""}<small class="sub2" style="color:${p.d1>0?"var(--up)":p.d1<0?"var(--dn)":"var(--mute)"}">${sgn(p.d1)}</small>`; };
+let liveTimer = null;
+window.LIVE_FEED = {
+  update(map){
+    Object.keys(map).forEach(k => LIVE.set(k, map[k]));
+    if (liveTimer) return;
+    liveTimer = setTimeout(() => {                 // repaint prices only (open charts and notes stay as they are)
+      liveTimer = null;
+      document.querySelectorAll("[data-pk]").forEach(td => { const s = BYK.get(td.dataset.pk); if (s && LIVE.has(s.k)) td.innerHTML = pxCell(s); });
+      renderTicker(wlRanks());
+    }, 1000);
+  },
+  clear(){ LIVE.clear(); wlRefresh(); },
+  symbols(){ return wlVisible.map(k => BYK.get(k)).filter(Boolean).map(s => ({k:s.k, sym:s.s, ex:s.x==="B"?"BSE":"NSE", isin:s.i, code:s.code})); },
 };
-const inAuto = k => Object.values(GSET).some(g => g.has(k));
-function groupsOf(k){
-  const g = Object.keys(GSET).filter(id => GSET[id].has(k));
-  if (g.includes("n50") && g.includes("n500")) g.splice(g.indexOf("n500"), 1);          // Nifty 50 is inside Nifty 500: show one label
-  const it = WL.get(k); if (it && it.mine && !it.hidden) g.push("mine");
-  return g;
+
+// ---- lists
+const FIXED = [["n50","Nifty 50","N50"],["n500","Nifty 500","N500"],["fo","F&O","F&O"],["nsme","NSE SME","SME"],["bsme","BSE SME","BSE SME"],["ipo","IPO","IPO"]];
+const MYL = [1,2,3,4,5].map(n => ["w"+n, "Watchlist "+n, "W"+n]);
+const LNAME = Object.fromEntries([...FIXED, ...MYL, ["old","Hataye gaye","Old"]].map(x => [x[0], x[1]]));
+const LLAB = Object.fromEntries([...FIXED, ...MYL].map(x => [x[0], x[2]]));
+const FSET = Object.fromEntries(FIXED.map(([id]) => [id, new Set((D.lists || {})[id] || [])]));
+const IPO = D.ipo || {};
+const CHG = Object.assign({today:[], new:{}, exits:[]}, D.chg || {});
+const EXITS = new Map();
+CHG.exits.forEach(([d, lid, k, sym, why]) => { if (!EXITS.has(k)) EXITS.set(k, []); EXITS.get(k).push({d, lid, sym, why}); });
+const symOf = k => (BYK.get(k) || WL.get(k) || (EXITS.get(k) || [{}])[0]).s || (WL.get(k) || {}).sym || ((EXITS.get(k) || [{}])[0].sym) || k.slice(2);
+
+// Item (one per stock, notes/tags belong to the stock): {k, sym, ex, name, added, notes, tags, lists:[1-5], oldDel}
+function norm(it){
+  if (!Array.isArray(it.lists)) it.lists = (it.mine !== false && !it.hidden) ? [1] : [];   // older versions: "Meri list" -> Watchlist 1
+  delete it.mine; delete it.hidden;
+  it.lists = [...new Set(it.lists.map(Number).filter(n => n >= 1 && n <= 5))].sort();
+  it.notes = it.notes || ""; it.tags = it.tags || []; it.oldDel = it.oldDel || "";
+  return it;
 }
-// mode: groups switched on today, and auto groups removed from the watchlist ("Group hatao")
-let GS = {on:new Set(), gone:new Set()};
+const blank = k => { const s = BYK.get(k); return {k, sym:s ? s.s : symOf(k), ex:k[0]==="B"?"BSE":"NSE", name:s ? s.n : "", notes:"", tags:[], lists:[], oldDel:""}; };
+const getIt = k => WL.get(k) || blank(k);
+const oldOf = k => (EXITS.get(k) || []).filter(e => e.d > getIt(k).oldDel);
+function members(id){
+  if (FSET[id]) return [...FSET[id]];
+  if (id === "old") return [...EXITS.keys()].filter(k => oldOf(k).length);
+  const n = +id.slice(1);
+  return [...WL.values()].filter(i => i.lists.includes(n)).map(i => i.k);
+}
+let GS = {on:new Set()};
 function loadMode(){
-  const m = jget("wl_mode", null);
-  if (m) GS = {on:new Set(m.on || []), gone:new Set(m.gone || [])};
-  else GS = {on:new Set([[...WL.values()].some(i => i.mine && !i.hidden) ? "mine" : "n50"]), gone:new Set()};
+  let m = jget("wl_mode3", null);
+  if (!m) { const v2 = jget("wl_mode", null);            // earlier version: groups + "mine"
+    if (v2 && v2.on) m = {on: v2.on.filter(g => !(v2.gone || []).includes(g)).map(g => g === "mine" ? "w1" : g)}; }
+  GS = {on:new Set((m && m.on) || (members("w1").length ? ["w1"] : ["n50"]))};
 }
-const saveMode = () => store.set("wl_mode", JSON.stringify({on:[...GS.on], gone:[...GS.gone]}));
-function members(g){
-  if (g === "mine") return [...WL.values()].filter(i => i.mine && !i.hidden).map(i => i.k);
-  return [...GSET[g]].filter(k => !(WL.get(k) || {}).hidden);
-}
-function visibleKeys(){
-  const out = new Set();
-  GS.on.forEach(g => { if (!GS.gone.has(g)) members(g).forEach(k => out.add(k)); });
-  return [...out];
-}
+const saveMode = () => store.set("wl_mode3", JSON.stringify({on:[...GS.on]}));
+function visibleKeys(){ const out = new Set(); GS.on.forEach(id => members(id).forEach(k => out.add(k))); return [...out]; }
+
+// ---- auto tags (from today's end-of-day numbers) and my tags
+const AUTO = [
+  ["Darvas Breakout", s => !!(s.dv && s.dv.st === "bo")],
+  ["Near Darvas Top", s => !!(s.dv && s.dv.st === "box" && s.dv.t && s.c >= s.dv.t * 0.97)],
+  ["Volume Spike", s => (s.mi || [])[0] >= 2],
+  ["Near 52W High", s => s.f52 != null && s.f52 >= -5],
+  ["IPO Base", s => !!s.ib],
+];
+const autoOf = s => s ? AUTO.filter(([, f]) => f(s)).map(([t]) => t) : [];
 
 function wlSaveCache(){ store.set(WLK.cache, JSON.stringify({items:[...WL.values()], at:Date.now(), synced:wlSynced})); }
 function wlSaveQueue(){ store.set(WLK.queue, JSON.stringify(wlQueue)); }
@@ -1756,18 +1967,19 @@ const wlApi = () => jget(WLK.api, null);
 function applyOp(op){
   if (op.op === "patch") op.items.forEach(p => {
     let e = WL.get(p.k);
-    if (!e) { e = norm(Object.assign(blank(p.k), {sym:p.sym||blank(p.k).sym, ex:p.ex||blank(p.k).ex, name:p.name||blank(p.k).name, added:new Date().toISOString().slice(0,10)})); WL.set(p.k, e); }
+    if (!e) { e = norm(Object.assign(blank(p.k), {sym:p.sym || blank(p.k).sym, ex:p.ex || blank(p.k).ex, name:p.name || blank(p.k).name, added:new Date().toISOString().slice(0,10)})); WL.set(p.k, e); }
     if (p.notes != null) e.notes = p.notes;
     if (p.tags) e.tags = p.tags;
-    if (p.mine != null) e.mine = !!p.mine;
-    if (p.hidden != null) e.hidden = !!p.hidden;
-    if (!e.mine && !e.hidden && !e.notes && !e.tags.length) WL.delete(p.k);
+    if (p.lists) e.lists = [...new Set(p.lists.map(Number))].sort();
+    if (p.addList) e.lists = [...new Set([...e.lists, +p.addList])].sort();
+    if (p.delList) e.lists = e.lists.filter(n => n !== +p.delList);
+    if (p.mine === true) e.lists = [...new Set([...e.lists, 1])].sort();        // version 2 queue entries
+    if (p.mine === false) e.lists = e.lists.filter(n => n !== 1);
+    if (p.oldDel != null) e.oldDel = p.oldDel;
+    if (!e.lists.length && !e.notes && !e.tags.length && !e.oldDel) WL.delete(p.k);
   });
-  else if (op.op === "add") op.items.forEach(it => {      // version 1 queue entries
-    const e = WL.get(it.k);
-    if (!e) WL.set(it.k, norm(Object.assign({added:new Date().toISOString().slice(0,10)}, it)));
-    else { if (!e.notes && it.notes) e.notes = it.notes; if (it.tags && it.tags.length) e.tags = [...new Set([...e.tags, ...it.tags])]; }
-  });
+  else if (op.op === "add") op.items.forEach(it => { const e = WL.get(it.k) || norm(Object.assign(blank(it.k), it, {lists:[]})); WL.set(it.k, e);
+    if (!e.lists.includes(1)) e.lists = [...e.lists, 1].sort(); if (!e.notes && it.notes) e.notes = it.notes; });
   else if (op.op === "remove") op.keys.forEach(k => WL.delete(k));
   else if (op.op === "update") { const e = WL.get(op.k); if (e) { if (op.notes != null) e.notes = op.notes; if (op.tags) e.tags = op.tags; } }
 }
@@ -1787,12 +1999,14 @@ async function wlSync(){
       : await fetch(a.url + (a.url.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(a.key || ""));
     let j; try { j = await res.json(); } catch(e) { throw new Error("Web app ka jawab samajh nahi aaya. Deploy mein 'Who has access: Anyone' chuna hai?"); }
     if (!j.ok) throw new Error(j.error || "Sheet ne error diya");
-    const old = j.version !== 2;     // version 1 script ignores the new changes: keep them queued
+    wlVer = j.version || 1;
+    const old = wlVer < 3;          // older script would drop the new kind of changes: keep them queued
     if (!old) { wlQueue = wlQueue.slice(sent.length); wlSaveQueue(); }
     WL = new Map((j.items||[]).map(i => [i.k, norm(i)]));
     wlQueue.forEach(applyOp);
     wlSynced = Date.now(); wlErr = old ? "Sheet ka Apps Script purana hai: naya Code.gs paste karke New version deploy karo (badlav tab tak is phone mein rukenge)" : "";
     wlSaveCache();
+    if (!old) saveRankHistory();
   } catch(e) {
     wlErr = (e && e.message && !/fetch|network|load failed/i.test(e.message)) ? e.message : "offline";
   }
@@ -1811,10 +2025,41 @@ function wlStatus(msg){
   $("wlsync").innerHTML = t;
 }
 
-// ranks are worked out only among the stocks of the groups switched on
+// ---- rank history of Watchlist 1-5: in the Google Sheet (and the last 10 days in this browser), never in the repo
+const rankWithin = keys => keys.filter(k => BYK.has(k)).sort((a,b) => (BYK.get(b).ms - BYK.get(a).ms) || cmpStr(BYK.get(a).s, BYK.get(b).s));
+function saveRankHistory(){
+  if (!ISO) return;
+  const loc = jget("wl_rankhist", {}), sent = jget("wl_histsent", {});
+  const ops = [];
+  for (let n = 1; n <= 5; n++) {
+    const ranked = rankWithin(members("w" + n));
+    if (!ranked.length) continue;
+    (loc[ISO] = loc[ISO] || {})[n] = Object.fromEntries(ranked.map((k,i) => [k, i+1]));
+    if (wlApi() && wlVer >= 3 && sent[ISO + ":" + n] !== ranked.length) {
+      ops.push({op:"hist", date:ISO, list:n, rows:ranked.map((k,i) => [k, BYK.get(k).s, i+1, BYK.get(k).ms])});
+      sent[ISO + ":" + n] = ranked.length;
+    }
+  }
+  Object.keys(loc).sort().slice(0, -10).forEach(d => delete loc[d]);
+  store.set("wl_rankhist", JSON.stringify(loc));
+  store.set("wl_histsent", JSON.stringify(Object.fromEntries(Object.entries(sent).filter(([k]) => k.slice(0,10) >= Object.keys(loc).sort()[0]))));
+  if (ops.length) { wlQueue.push(...ops); wlSaveQueue(); wlSync(); }
+}
+const histCache = new Map();
+function loadHist(k){
+  if (histCache.has(k)) return;
+  const loc = jget("wl_rankhist", {});
+  histCache.set(k, Object.keys(loc).sort().flatMap(d => Object.entries(loc[d]).filter(([, m]) => m[k]).map(([n, m]) => [d, +n, m[k]])));
+  const a = wlApi();
+  if (!a || !a.url || wlVer < 3) return;
+  fetch(a.url + (a.url.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(a.key || "") + "&hist=" + encodeURIComponent(k))
+    .then(r => r.json()).then(j => { if (j.ok && j.hist) { histCache.set(k, j.hist.map(h => [h[0], +h[1], +h[2]])); if (wlOpen.has(k)) renderWl(); } }).catch(() => {});
+}
+
+// ---- ranks: worked out only among the stocks on screen
 function wlRanks(){
   const keys = visibleKeys(), sym = k => (BYK.get(k) || {}).s || k;
-  const today = keys.filter(k => BYK.has(k)).sort((a,b) => (BYK.get(b).ms - BYK.get(a).ms) || cmpStr(sym(a), sym(b)));
+  const today = rankWithin(keys);
   const prev = keys.filter(k => MP[k] != null).sort((a,b) => (MP[b] - MP[a]) || cmpStr(sym(a), sym(b)));
   RANK = new Map(today.map((k,i) => [k, i+1])); PRANK = new Map(prev.map((k,i) => [k, i+1]));
   wlVisible = keys;
@@ -1828,23 +2073,23 @@ function rankCell(k){
   return `<b>${r}</b>${ch}`;
 }
 const isNew20 = k => RANK.get(k) <= 20 && PRANK.size > 0 && !(PRANK.get(k) <= 20);
-function allTags(keys){
-  const used = new Map();
-  (keys || wlVisible).forEach(k => { const it = WL.get(k); if (it) it.tags.forEach(t => used.set(t, (used.get(t)||0) + 1)); });
+
+function myTags(){
+  const used = new Map(["Watch Closely","PEAD"].map(t => [t, 0]));
   WL.forEach(it => it.tags.forEach(t => { if (!used.has(t)) used.set(t, 0); }));
-  const list = [...DEF_TAGS, ...[...used.keys()].filter(t => !DEF_TAGS.includes(t)).sort()];
-  return list.map(t => [t, used.get(t) || 0]);
+  wlVisible.forEach(k => { const it = WL.get(k); if (it) it.tags.forEach(t => used.set(t, used.get(t) + 1)); });
+  return [...used.entries()];
 }
-const isMine = k => { const it = WL.get(k); return !!(it && it.mine && !it.hidden); };
-function wlBtn(k){ const on = isMine(k); return `<button class="wlb${on?" on":""}" data-wl="${esc(k)}" title="${on?"Meri list se hatao":"Meri list mein daalo"}">${on?"✓ WL":"+ WL"}</button>`; }
-function wlButtons(){ document.querySelectorAll("button.wlb").forEach(b => { const on = isMine(b.dataset.wl); b.classList.toggle("on", on); b.textContent = on ? "✓ WL" : "+ WL"; }); }
+const wlLabel = k => { const it = WL.get(k); return it && it.lists.length ? "✓ W" + it.lists.join(",") : "+ WL"; };
+function wlBtn(k){ const it = WL.get(k), on = !!(it && it.lists.length); return `<button class="wlb${on?" on":""}" data-wl="${esc(k)}" title="Watchlist 1-5 mein daalo / hatao">${wlLabel(k)}</button>`; }
+function wlButtons(){ document.querySelectorAll("button.wlb").forEach(b => { const it = WL.get(b.dataset.wl); b.classList.toggle("on", !!(it && it.lists.length)); b.textContent = wlLabel(b.dataset.wl); }); }
 
 function renderTicker(order){
   const top = order.slice(0, 20).map(k => BYK.get(k));
   $("ticker").hidden = !top.length;
   if (!top.length) return;
-  const one = top.map((s,i) => { const d = s.ch["1D"];
-    return `<a data-tk="${esc(s.k)}"><span class="r1">${i+1}.</span><b>${esc(s.s)}</b>₹${fmt(s.c)} <span style="color:${d>0?"var(--up)":d<0?"var(--dn)":"var(--mute)"}">${sgn(d)}</span></a>`; }).join("");
+  const one = top.map((s,i) => { const p = px(s);
+    return `<a data-tk="${esc(s.k)}"><span class="r1">${i+1}.</span><b>${esc(s.s)}</b>₹${fmt(p.c)} <span style="color:${p.d1>0?"var(--up)":p.d1<0?"var(--dn)":"var(--mute)"}">${sgn(p.d1)}</span></a>`; }).join("");
   $("tk").innerHTML = one + one;          // twice, so the loop is seamless
   $("tk").style.setProperty("--tkdur", Math.max(20, top.length * 4) + "s");
 }
@@ -1852,64 +2097,126 @@ function renderTicker(order){
 function wlRefresh(){
   const order = wlRanks();
   renderTicker(order); wlButtons(); wlStatus();
+  if (!$("pick").hidden) renderPick();
   if ($("v-wl").hidden) return;
   if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#wlbody textarea, #wlbody input[type=text], #wlbody input:not([type])")) { wlDirty = true; return; }
   renderWl(order);
 }
 
+// ---- sorting
+const ipoRef = k => { const i = IPO[k]; return i ? (i[1] || i[2]) : null; };
+const ipoPct = k => { const s = BYK.get(k), r = ipoRef(k); return s && r ? (px(s).c / r - 1) * 100 : null; };
+const SORTS = [
+  ["score", "Momentum Score", (k,s) => s && s.ms],
+  ["d1", "Aaj ka % change", (k,s) => s && px(s).d1],
+  ["w1", "1 week % change", (k,s) => s && s.ch["1W"]],
+  ["m1", "1 month % change", (k,s) => s && s.ch["1M"]],
+  ["m3", "3 month % change", (k,s) => s && s.ch["3M"]],
+  ["vol", "Volume (aaj)", (k,s) => s && s.v],
+  ["vx", "Volume spike (× 20-din avg)", (k,s) => s && (s.mi || [])[0]],
+  ["tv", "Turnover ₹", (k,s) => s && s.tv],
+  ["f52", "52W high se doori", (k,s) => s && s.f52],
+  ["rk", "Rank gain (kal se)", k => rankChg(k)],
+  ["price", "Price", (k,s) => s && px(s).c],
+  ["name", "Naam A–Z", (k,s) => (s ? s.n : getIt(k).name || symOf(k)).toUpperCase()],
+  ["ipod", "IPO: listing date", k => IPO[k] ? IPO[k][0] : null],
+  ["ipor", "IPO: % vs issue price", k => ipoPct(k)],
+];
+const SORTF = Object.fromEntries(SORTS.map(x => [x[0], x[2]]));
+let SO = Object.assign({by:"score", asc:false}, jget("wl_sort", {}));
+if (!SORTF[SO.by]) SO = {by:"score", asc:false};
+SORTS.forEach(([v, t]) => $("wlsort").add(new Option(t, v)));
+const sortBtn = () => { $("wlsort").value = SO.by; $("wlasc").textContent = SO.asc ? "↑ Chhota pehle" : "↓ Bada pehle"; if (SO.by === "name") $("wlasc").textContent = SO.asc ? "↑ A–Z" : "↓ Z–A"; };
+$("wlsort").addEventListener("input", e => { SO = {by:e.target.value, asc:e.target.value === "name"}; store.set("wl_sort", JSON.stringify(SO)); sortBtn(); wlLimit = 100; renderWl(); });
+$("wlasc").onclick = () => { SO.asc = !SO.asc; store.set("wl_sort", JSON.stringify(SO)); sortBtn(); renderWl(); };
+
 function wlFiltered(order){
   const q = $("wlq").value.trim().toUpperCase();
-  const missing = GS.on.has("mine") ? members("mine").filter(k => !BYK.has(k)) : [];
+  const set = new Set(order), missing = wlVisible.filter(k => !set.has(k));
   let list = order.concat(missing).filter(k => {
     const it = getIt(k), s = BYK.get(k);
-    if (wlTag && !it.tags.includes(wlTag)) return false;
-    if (q && !(it.sym||"").toUpperCase().includes(q) && !((s && s.n) || it.name || "").toUpperCase().includes(q) && !it.notes.toUpperCase().includes(q)) return false;
+    if (wlTags.size && ![...autoOf(s), ...it.tags].some(t => wlTags.has(t))) return false;
+    if (q && !symOf(k).toUpperCase().includes(q) && !((s && s.n) || it.name || "").toUpperCase().includes(q) && !it.notes.toUpperCase().includes(q)) return false;
     return true;
   });
-  const so = $("wlsort").value, big = 1e9;
-  if (so === "chg") list.sort((a,b) => (rankChg(b) ?? -big) - (rankChg(a) ?? -big) || (RANK.get(a)||big) - (RANK.get(b)||big));
-  else if (so === "d1") list.sort((a,b) => ((BYK.get(b)||{ch:{}}).ch["1D"] ?? -big) - ((BYK.get(a)||{ch:{}}).ch["1D"] ?? -big));
-  else if (so === "sym") list.sort((a,b) => cmpStr(getIt(a).sym, getIt(b).sym));
-  else if (so === "added") list.sort((a,b) => cmpStr(String(getIt(b).added||""), String(getIt(a).added||"")));
+  const f = SORTF[SO.by], dir = SO.asc ? 1 : -1;
+  if (SO.by !== "score" || SO.asc) list = list.map(k => [k, f(k, BYK.get(k))]).sort((a, b) => {
+    const x = a[1], y = b[1];
+    if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+    return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir;
+  }).map(x => x[0]);
+  if (wlForce && !list.includes(wlForce)) list.unshift(wlForce);
   return list;
+}
+
+// ---- row labels: fixed lists, NEW (30 days), Watchlist 1-5, Old ("… se hata - date")
+function labels(k){
+  const out = [];
+  FIXED.forEach(([id,, lab]) => { if (FSET[id].has(k) && !(id === "n500" && FSET.n50.has(k))) out.push(`<span class="tag g">${esc(lab)}</span>`); });
+  (CHG.new[k] || []).forEach(([lid, d]) => out.push(`<span class="tag new" title="${esc(LNAME[lid])} mein ${fdIso(d)} ko aaya">NEW ${esc(LLAB[lid])}</span>`));
+  getIt(k).lists.forEach(n => out.push(`<span class="tag w">W${n}</span>`));
+  oldOf(k).forEach(e => out.push(`<span class="tag old">${esc(LNAME[e.lid])} se hata - ${fdIso(e.d)}${e.why ? " · " + esc(e.why) : ""}</span>`));
+  return out.join("");
+}
+function ipoLine(k, s){
+  const i = IPO[k]; if (!i || !FSET.ipo.has(k)) return "";
+  const pct = ipoPct(k), days = ISO && i[0] ? dayNum(ISO) - dayNum(i[0]) : null;
+  const ref = i[1] ? `Issue ₹${fmt(i[1])}` : i[2] ? `Listing din open ₹${fmt(i[2])}` : "issue price nahi mila";   // split/bonus adjusted
+  return `<small class="ipol">IPO: ${fdIso(i[0])} · ${ref}${s ? ` · abhi ₹${fmt(px(s).c)}` : ""}${pct == null ? "" : ` · <b style="color:${pct>=0?"var(--up)":"var(--dn)"}">${sgn(pct)}</b>`}${days == null ? "" : ` · ${days} din`}</small>`;
 }
 
 function wlEditor(k, s){
   const it = getIt(k), mine = new Set(it.tags), m = momParts(s);
   const parts = MOM_PARTS.map(([lab, max, why], i) => { const p = m.p[i] || 0;
     return `<tr><td>${lab}<small>${why(s, m)}</small><div class="bar"><i style="width:${Math.round(p/max*100)}%"></i></div></td><td class="p">${fmt(p,1).replace(/\.0$/,"")} / ${max}</td></tr>`; }).join("");
-  const h = wlHist && wlHist.r[k] ? wlHist.r[k].map((r,i) => [wlHist.dates[i], r]).filter(x => x[1] != null).slice(-10) : [];
-  const hist = h.length > 1 ? `<div class="hint">Rank history (Meri list, Sheet wale din): ${h.map(([d,r]) => `<span title="${esc(d)}">${r}</span>`).join(" → ")}</div>` : "";
-  const prevTxt = MP[k] != null ? ` · kal ${MP[k]}` : "";
+  const h = histCache.get(k) || [];
+  const hist = [1,2,3,4,5].map(n => { const r = h.filter(x => x[1] === n).slice(-10); return r.length > 1 ? `W${n}: ${r.map(x => `<span title="${esc(x[0])}">${x[2]}</span>`).join(" → ")}` : ""; }).filter(Boolean);
+  const auto = autoOf(s);
   return `<div class="wled">
-    <div><h4>Momentum Score: ${scoreChip(s.ms)} <span class="na" style="font-weight:400">${prevTxt} · rank ${RANK.get(k)||"—"}${PRANK.get(k)?` (kal ${PRANK.get(k)})`:""}</span></h4>
-      <table class="mbk">${parts}<tr><td><b>Total</b></td><td class="p">${s.ms} / 100</td></tr></table>${hist}</div>
-    <div><h4>Tags</h4><div class="chips">${allTags().map(([t]) => `<button class="tg${mine.has(t)?" on":""}" data-wtag="${esc(t)}" data-k="${esc(k)}">${esc(t)}</button>`).join("")}</div>
-      <div class="row"><input id="wlnt-${esc(k)}" placeholder="Apna tag likho" maxlength="30" style="flex:1"><button class="btn sm" data-wnewtag="${esc(k)}">+ Tag</button></div>
+    <div><h4>Momentum Score: ${scoreChip(s.ms)} <span class="na" style="font-weight:400">${MP[k] != null ? ` · kal ${MP[k]}` : ""} · rank ${RANK.get(k)||"—"}${PRANK.get(k)?` (kal ${PRANK.get(k)})`:""}</span></h4>
+      <table class="mbk">${parts}<tr><td><b>Total</b></td><td class="p">${s.ms} / 100</td></tr></table>
+      ${hist.length ? `<div class="hint">Rank history (list ke andar): ${hist.join(" · ")}</div>` : ""}</div>
+    <div><h4>Watchlist mein</h4><div class="chips">${[1,2,3,4,5].map(n => `<button class="tg${it.lists.includes(n)?" on":""}" data-wlist="${n}" data-k="${esc(k)}">W${n}</button>`).join("")}</div>
+      ${auto.length ? `<h4 style="margin-top:12px">Auto tags</h4><div class="chips">${auto.map(t => `<span class="tag a">${esc(t)}</span>`).join("")}</div>` : ""}
+      <h4 style="margin-top:12px">Mere tags</h4><div class="chips">${myTags().map(([t]) => `<button class="tg${mine.has(t)?" on":""}" data-wtag="${esc(t)}" data-k="${esc(k)}">${esc(t)}</button>`).join("")}</div>
+      <div class="row"><input id="wlnt-${esc(k)}" placeholder="Naya tag likho" maxlength="30" style="flex:1"><button class="btn sm" data-wnewtag="${esc(k)}">+ Tag</button></div>
       <h4 style="margin-top:12px">Notes</h4><textarea id="wln-${esc(k)}" rows="3" data-k="${esc(k)}" placeholder="Is stock ke baare mein note…">${esc(it.notes)}</textarea>
-      <div class="row"><button class="btn sm" data-wsave="${esc(k)}">Note save karo</button>${isMine(k)?"":`<button class="btn sm" data-wmine="${esc(k)}">+ Meri list</button>`}<button class="btn sm" data-wdel="${esc(k)}">Watchlist se hatao</button></div></div></div>`;
+      <div class="row"><button class="btn sm" data-wsave="${esc(k)}">Note save karo</button></div></div></div>`;
 }
 
+function chip(id, name, cnt){ return `<button class="tg${GS.on.has(id)?" on":""}" data-wmode="${id}">${esc(name)} <small>${fmtInt(cnt)}</small></button>`; }
 function renderMode(){
-  $("wlmode").innerHTML = GROUPS.map(([g, name]) => {
-    if (GS.gone.has(g)) return `<button class="tg gone" data-wadd="${g}" title="Wapas watchlist mein laao">+ ${esc(name)}</button>`;
-    return `<button class="tg${GS.on.has(g)?" on":""}" data-wmode="${g}">${esc(name)} <small>${fmtInt(members(g).length)}</small></button>`;
+  $("wlmodeF").innerHTML = FIXED.map(([id, name]) => chip(id, name, FSET[id].size)).join("");
+  $("wlmodeM").innerHTML = MYL.map(([id, name]) => chip(id, name, members(id).length)).join("") + chip("old", "Hataye gaye (Old)", members("old").length);
+}
+const editOn = () => [...GS.on].filter(id => id[0] === "w" || id === "old");
+const canSel = k => editOn().some(id => id === "old" ? oldOf(k).length > 0 : getIt(k).lists.includes(+id.slice(1)));
+
+function renderChanges(){
+  const t = CHG.today || [];
+  $("wlchg").hidden = !t.length;
+  if (!t.length) return;
+  $("wlchgn").textContent = `(${t.length})`;
+  if (t.length <= 12 && !$("wlchg").dataset.init) { $("wlchg").open = true; $("wlchg").dataset.init = 1; }
+  $("wlchglist").innerHTML = FIXED.map(([id, name]) => {
+    const add = t.filter(x => x[0] === id && x[1] === "+"), rem = t.filter(x => x[0] === id && x[1] === "-");
+    if (!add.length && !rem.length) return "";
+    const b = (x, cls) => `<button class="tg ${cls}" data-tk="${esc(x[2])}">${x[1] === "+" ? "+" : "−"} ${esc(x[3])}${x[4] ? ` <small>${esc(x[4])}</small>` : ""}</button>`;
+    return `<div class="chgrow"><b>${esc(name)}</b><div class="chips">${add.map(x => b(x, "addc")).join("")}${rem.map(x => b(x, "remc")).join("")}</div></div>`;
   }).join("");
-  const sel = $("wlgdel"), cur = sel.value;
-  sel.innerHTML = `<option value="">Group chuno…</option>` + GROUPS.filter(([g]) => !GS.gone.has(g))
-    .map(([g, name]) => `<option value="${g}">${esc(name)}${g==="mine"?" (saare apne stocks)":""}</option>`).join("");
-  sel.value = cur;
 }
 
 function renderWl(order){
   clearCharts("wl");
   order = order || wlRanks();
-  renderMode();
+  renderMode(); renderChanges(); sortBtn();
   const list = wlFiltered(order);
   const listSet = new Set(list);
-  [...wlSel].forEach(k => { if (!listSet.has(k)) wlSel.delete(k); });    // selection only covers what is on screen
-  $("wltags").innerHTML = `<button class="tg${wlTag?"":" on"}" data-wtf="">Sab tags</button>` +
-    allTags().map(([t,n]) => `<button class="tg${wlTag===t?" on":""}" data-wtf="${esc(t)}">${esc(t)} <small>${n}</small></button>`).join("");
+  [...wlSel].forEach(k => { if (!listSet.has(k) || !canSel(k)) wlSel.delete(k); });
+  const tagChip = ([t, n]) => `<button class="tg${wlTags.has(t)?" on":""}" data-wtf="${esc(t)}">${esc(t)} <small>${n}</small></button>`;
+  const vis = wlVisible.map(k => BYK.get(k));
+  $("wltagsA").innerHTML = AUTO.map(([t, f]) => tagChip([t, vis.filter(s => s && f(s)).length])).join("");
+  $("wltagsM").innerHTML = myTags().map(tagChip).join("");
   const new20 = order.filter(isNew20);
   $("wlnew").hidden = !new20.length;
   $("wlnewlist").innerHTML = new20.map(k => { const s = BYK.get(k), p = PRANK.get(k);
@@ -1920,37 +2227,39 @@ function renderWl(order){
     <div class="stat"><b>${sc.length ? Math.round(sc.reduce((a,b)=>a+b,0)/sc.length) : "—"}</b><span>average score</span></div>
     <div class="stat"><b style="color:var(--up)">${sc.filter(v=>v>=70).length}</b><span>score 70+</span></div>
     <div class="stat"><b style="color:var(--amb)">${new20.length}</b><span>new in top 20</span></div>`;
-  $("wlselall").checked = list.length > 0 && wlSel.size === list.length;
-  $("wlselall").indeterminate = wlSel.size > 0 && wlSel.size < list.length;
-  $("wlsellab").textContent = `Sab select karo (${fmtInt(list.length)})`;
+  const selectable = list.filter(canSel);
+  $("wlselbar").hidden = !editOn().length;
+  $("wlselall").checked = selectable.length > 0 && wlSel.size === selectable.length;
+  $("wlselall").indeterminate = wlSel.size > 0 && wlSel.size < selectable.length;
+  $("wlsellab").textContent = `Sab select karo (${fmtInt(selectable.length)})`;
   $("wlseldel").disabled = !wlSel.size;
   $("wlseldel").textContent = wlSel.size ? `Selected hatao (${fmtInt(wlSel.size)})` : "Selected hatao";
   const NC = 5;
   $("wlhead").innerHTML = `<th>#</th><th class="l">Stock</th><th>Score</th><th>Close ₹</th><th class="l hide-m">Darvas</th>`;
-  const rows = list.slice(0, wlLimit);
-  const cb = k => `<input type="checkbox" class="selcb" data-sel="${esc(k)}"${wlSel.has(k)?" checked":""} aria-label="Select">`;
-  $("wlbody").innerHTML = rows.map(k => {
+  const cb = k => canSel(k) ? `<input type="checkbox" class="selcb" data-sel="${esc(k)}"${wlSel.has(k)?" checked":""} aria-label="Select">` : "";
+  $("wlbody").innerHTML = list.slice(0, wlLimit).map(k => {
     const it = getIt(k), s = BYK.get(k);
-    const tags = groupsOf(k).map(g => `<span class="tag g">${GLABEL[g]}</span>`).join("") + it.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("");
-    if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym"><b>${esc(it.sym||k)}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua?)</small></td><td colspan="3" class="l"><button class="btn sm" data-wdel="${esc(k)}">Hatao</button></td></tr>`;
-    const d1 = s.ch["1D"], held = HELD.get(k);
+    const tags = labels(k) + it.tags.map(t => `<span class="tag">${esc(t)}</span>`).join("");
+    const forced = k === wlForce && !wlVisible.includes(k) ? " · is mode mein nahi" : "";
+    if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
+    const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
-      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}</small></td>
+      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms)}</td>
-      <td>${fmt(s.c)}<small class="sub2" style="color:${d1>0?"var(--up)":d1<0?"var(--dn)":"var(--mute)"}">${sgn(d1)}</small></td>
+      <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
     return main + (wlOpen.has(k) ? detail(s, held, NC, "wl", wlEditor(k, s)) : "");
-  }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">${!GS.on.size || [...GS.on].every(g => GS.gone.has(g)) ? "Upar “Aaj ka mode” mein koi group chuno." : wlVisible.length ? "Is filter mein koi stock nahi." : "Is group mein abhi koi stock nahi. “+ Stocks add karo” kholo, ya Scanner mein kisi stock pe “+ WL” dabao."}</td></tr>`;
+  }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">${!GS.on.size ? "Upar koi list on karo." : wlVisible.length ? "Is filter mein koi stock nahi." : "Is list mein abhi koi stock nahi. “+ Stocks add karo” kholo, ya Scanner mein kisi stock pe “+ WL” dabao."}</td></tr>`;
   $("wlinfo").textContent = list.length ? `${fmtInt(Math.min(wlLimit, list.length))} / ${fmtInt(list.length)} dikh rahe · tap karo score ka breakdown, notes aur chart ke liye` : "";
   $("wlmore").hidden = list.length <= wlLimit;
-  $("wlfoot").innerHTML = `Rank aur score order sirf chune hue groups ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se banta hai (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. F&amp;O list NSE ki official F&amp;O securities list se (${fmtInt(GSET.fo.size)} stocks). Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
+  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
   wlDirty = false;
   mountCharts();
 }
 
 // ---- undo (10 seconds after any removal)
 let undoSnap = null, undoTimer = null;
-function snapshot(keys){ return {items: keys.map(k => [k, WL.has(k) ? JSON.parse(JSON.stringify(WL.get(k))) : null]), gs: {on:[...GS.on], gone:[...GS.gone]}}; }
+function snapshot(keys){ return {items: keys.map(k => [k, WL.has(k) ? JSON.parse(JSON.stringify(WL.get(k))) : null])}; }
 function offerUndo(msg, snap){
   undoSnap = snap; $("undomsg").textContent = msg; $("undo").hidden = false;
   clearTimeout(undoTimer); undoTimer = setTimeout(() => { $("undo").hidden = true; undoSnap = null; }, 10000);
@@ -1958,21 +2267,36 @@ function offerUndo(msg, snap){
 $("undobtn").onclick = () => {
   const sn = undoSnap; if (!sn) return;
   undoSnap = null; $("undo").hidden = true; clearTimeout(undoTimer);
-  GS = {on:new Set(sn.gs.on), gone:new Set(sn.gs.gone)}; saveMode();
-  wlPatch(sn.items.map(([k, it]) => it ? patchOne(k, {notes:it.notes, tags:it.tags, mine:it.mine, hidden:it.hidden})
-                                       : patchOne(k, {notes:"", tags:[], mine:false, hidden:false})));
-  wlRefresh();
+  wlPatch(sn.items.map(([k, it]) => patchOne(k, it ? {notes:it.notes, tags:it.tags, lists:it.lists, oldDel:it.oldDel}
+                                                   : {notes:"", tags:[], lists:[], oldDel:""})));
 };
-// remove from the watchlist: out of Meri list, and hidden from the ready-made groups (notes and tags are kept)
-function removeKeys(keys, label){
-  keys = [...new Set(keys)]; if (!keys.length) return;
+// remove from the editable lists that are on (Watchlist 1-5, Hataye gaye); fixed lists are read-only
+function removeKeys(keys){
+  const on = editOn();
+  keys = [...new Set(keys)].filter(canSel); if (!keys.length) return;
   const snap = snapshot(keys);
-  keys.forEach(k => { wlSel.delete(k); wlOpen.delete(k); });
-  wlPatch(keys.map(k => patchOne(k, {mine:false, hidden:inAuto(k)})));
-  offerUndo(`${label || fmtInt(keys.length) + " stock"} hataye`, snap);
+  wlPatch(keys.map(k => { const it = getIt(k), ex = oldOf(k);
+    const f = {lists: it.lists.filter(n => !on.includes("w" + n))};
+    if (on.includes("old") && ex.length) f.oldDel = ex.map(e => e.d).sort().pop();
+    return patchOne(k, f); }));
+  keys.forEach(k => wlSel.delete(k));
+  offerUndo(`${fmtInt(keys.length)} stock hataye (${on.map(id => LNAME[id]).join(", ")})`, snap);
 }
+$("wlseldel").onclick = () => removeKeys([...wlSel]);
+$("wlselall").onchange = e => { if (e.target.checked) wlFiltered(wlRanks()).filter(canSel).forEach(k => wlSel.add(k)); else wlSel.clear(); renderWl(); };
+$("wlclrsel").innerHTML = `<option value="">List chuno…</option>` + [...MYL, ["old", "Hataye gaye (Old)"]].map(([id, name]) => `<option value="${id}">${name}</option>`).join("");
+$("wlclear").onclick = () => {
+  const id = $("wlclrsel").value; if (!id) return;
+  const keys = members(id);
+  if (!keys.length) { $("wlmsg").textContent = ""; return; }
+  if (!confirm(`${LNAME[id]} ke saare ${keys.length} stocks hat jayenge (notes aur tags rahenge). Pakka?`)) return;
+  const snap = snapshot(keys);
+  wlPatch(keys.map(k => id === "old" ? patchOne(k, {oldDel: oldOf(k).map(e => e.d).sort().pop()}) : patchOne(k, {delList: +id.slice(1)})));
+  offerUndo(`${LNAME[id]} khali ki (${keys.length})`, snap);
+  $("wlclrsel").value = "";
+};
 
-// --- adding stocks (they go into "Meri list")
+// ---- adding (Watchlist 1-5 only)
 function resolveToken(t){
   t = String(t||"").trim().replace(/^["']+|["']+$/g, "").toUpperCase();
   if (!t) return null;
@@ -2003,118 +2327,90 @@ function tokensFromCSV(text){
   }
   return rows.map(r => r[0]).concat(...rows.map(r => r.slice(1))).map(c => c.trim()).filter(Boolean);  // no heading: every cell
 }
-function addMine(list){
-  const fresh = list.filter(s => !isMine(s.k));
-  wlPatch(fresh.map(s => patchOne(s.k, {mine:true, hidden:false})));
-  if (fresh.length && !GS.on.has("mine")) { GS.on.add("mine"); GS.gone.delete("mine"); saveMode(); wlRefresh(); }
-  return fresh.length;
+function addTo(n, stocks){
+  const fresh = stocks.filter(s => !getIt(s.k).lists.includes(n));
+  const room = Math.max(0, MAXW - members("w" + n).length), put = fresh.slice(0, room);
+  wlPatch(put.map(s => patchOne(s.k, {addList:n})));
+  if (put.length && !GS.on.has("w" + n)) { GS.on.add("w" + n); saveMode(); wlRefresh(); }
+  return {added: put.length, have: stocks.length - fresh.length, full: fresh.length - put.length};
 }
+for (let n = 1; n <= 5; n++) $("wltarget").add(new Option("Watchlist " + n, n));
+$("wltarget").value = store.get("wl_target") || "1";
+$("wltarget").addEventListener("input", e => store.set("wl_target", e.target.value));
 function addStocks(tokens, label){
-  const found = new Map(), miss = [];
+  const found = new Map(), miss = [], n = +$("wltarget").value;
   tokens.forEach(t => { const s = resolveToken(t); if (s) found.set(s.k, s); else if (!/^(symbol|exchange|nse|bse)$/i.test(t)) miss.push(t); });
-  const n = addMine([...found.values()]), have = found.size - n;
-  $("wlmsg").innerHTML = `${label ? esc(label)+": " : ""}<b class="ok">${n} Meri list mein add hue</b>${have?` · ${have} pehle se the`:""}${miss.length?` · ${miss.length} nahi mile: ${esc([...new Set(miss)].slice(0,15).join(", "))}${miss.length>15?"…":""}`:""}`;
+  const r = addTo(n, [...found.values()]);
+  $("wlmsg").innerHTML = `${label ? esc(label)+": " : ""}<b class="ok">${r.added} Watchlist ${n} mein add hue</b>${r.have?` · ${r.have} pehle se the`:""}${r.full?` · ⚠ ${r.full} nahi aaye (list mein 1000 ki limit)`:""}${miss.length?` · ${miss.length} nahi mile: ${esc([...new Set(miss)].slice(0,15).join(", "))}${miss.length>15?"…":""}`:""}`;
 }
 $("wlpastebtn").onclick = () => { addStocks(tokensFromText($("wlpaste").value)); $("wlpaste").value = ""; };
 $("wlcsv").onchange = e => { const f = e.target.files[0]; if (!f) return;
   f.text().then(t => addStocks(tokensFromCSV(t), f.name)); e.target.value = ""; };
-$("wlidx").add(new Option("Index chuno…", ""));
-Object.keys(IDX).forEach(k => $("wlidx").add(new Option(`${k} (${IDX[k].length})`, "I:"+k)));
-$("wlidxbtn").onclick = () => {
-  const v = $("wlidx").value; if (!v) return;
-  const list = idxKeys(v.slice(2)).map(k => BYK.get(k));
-  const n = list.filter(s => !isMine(s.k)).length;
-  if (n > 300 && !confirm(`${n} stocks Meri list mein add honge. Theek hai?`)) return;
-  addMine(list);
-  $("wlmsg").innerHTML = `${esc(v.slice(2))}: <b class="ok">${n} Meri list mein add hue</b> · ${list.length - n} pehle se the`;
-};
 
-// --- clicks: scanner "+ WL", ticker, mode chips, selection, tags, notes
-function wlToggle(k){
-  if (isMine(k)) { const snap = snapshot([k]); wlPatch([patchOne(k, {mine:false})]); offerUndo(`${getIt(k).sym} Meri list se hataya`, snap); }
-  else addMine([BYK.get(k)].filter(Boolean));
+// ---- "+ WL" picker (Scanner): which watchlist, 1-5
+let pickK = null;
+function renderPick(){
+  const s = BYK.get(pickK), it = getIt(pickK);
+  $("pickt").innerHTML = `<b>${esc(s ? s.s : symOf(pickK))}</b> kis watchlist mein? <span class="na">(tap = daalo / hatao)</span>`;
+  $("pickl").innerHTML = [1,2,3,4,5].map(n => `<button class="tg${it.lists.includes(n)?" on":""}" data-pick="${n}">${it.lists.includes(n)?"✓ ":""}Watchlist ${n} <small>${members("w"+n).length}</small></button>`).join("");
 }
+function togglePick(k, n){
+  const it = getIt(k);
+  if (it.lists.includes(n)) { const snap = snapshot([k]); wlPatch([patchOne(k, {delList:n})]); offerUndo(`${symOf(k)} Watchlist ${n} se hataya`, snap); }
+  else { const r = addTo(n, [BYK.get(k)].filter(Boolean)); if (r.full) alert(`Watchlist ${n} mein 1000 stocks ho chuke hain.`); }
+}
+$("pickl").onclick = e => { const b = e.target.closest("[data-pick]"); if (b) togglePick(pickK, +b.dataset.pick); };
+$("pickx").onclick = () => { $("pick").hidden = true; };
+$("pick").onclick = e => { if (e.target.id === "pick") $("pick").hidden = true; };
+
+// ---- clicks
 function saveNote(k){ const ta = document.getElementById("wln-"+k), it = getIt(k); if (ta && ta.value !== it.notes) wlPatch([patchOne(k, {notes:ta.value})]); }
 document.addEventListener("click", e => {
   const b = e.target.closest("button.wlb");
-  if (b) { e.stopPropagation(); wlToggle(b.dataset.wl); return; }
+  if (b) { e.stopPropagation(); pickK = b.dataset.wl; renderPick(); $("pick").hidden = false; return; }
   const tk = e.target.closest("[data-tk]");
-  if (tk) { const k = tk.dataset.tk; wlOpen.add(k); $("wlq").value = ""; wlTag = ""; showView("wl");
+  if (tk) { const k = tk.dataset.tk; wlOpen.add(k); wlForce = wlVisible.includes(k) ? "" : k; $("wlq").value = ""; wlTags.clear(); showView("wl");
     const row = document.querySelector(`#wlbody tr[data-wk="${CSS.escape(k)}"]`); if (row) row.scrollIntoView({block:"center"}); }
 }, true);
-$("wlmode").onclick = e => {
-  let b;
-  if ((b = e.target.closest("[data-wmode]"))) { const g = b.dataset.wmode; GS.on.has(g) ? GS.on.delete(g) : GS.on.add(g); }
-  else if ((b = e.target.closest("[data-wadd]"))) { GS.gone.delete(b.dataset.wadd); GS.on.add(b.dataset.wadd); }
-  else return;
-  saveMode(); wlSel.clear(); wlLimit = 100; wlRefresh();
-};
-$("wltags").onclick = e => { const b = e.target.closest("[data-wtf]"); if (b) { wlTag = b.dataset.wtf; wlLimit = 100; renderWl(); } };
-$("wlselall").onchange = e => { if (e.target.checked) wlFiltered(wlRanks()).forEach(k => wlSel.add(k)); else wlSel.clear(); renderWl(); };
-$("wlseldel").onclick = () => removeKeys([...wlSel]);
-$("wlgdelbtn").onclick = () => {
-  const g = $("wlgdel").value; if (!g) return;
-  if (g === "mine") {
-    const keys = members("mine"); if (!keys.length) return;
-    const snap = snapshot(keys);
-    wlPatch(keys.map(k => patchOne(k, {mine:false})));
-    offerUndo(`Meri list ke ${fmtInt(keys.length)} stocks hataye`, snap);
-  } else {
-    const snap = snapshot([]);
-    GS.gone.add(g); GS.on.delete(g); saveMode(); wlSel.clear(); wlRefresh();
-    offerUndo(`${GNAME[g]} group hataya`, snap);
-  }
-  $("wlgdel").value = "";
-};
-$("wlclear").onclick = () => {
-  const keys = [...WL.keys()];
-  if (!confirm("Poori watchlist clear ho jayegi: saare groups band aur Meri list khali. Notes aur tags Sheet mein rahenge. Pakka?")) return;
-  const snap = snapshot(keys);
-  GROUPS.forEach(([g]) => { if (g !== "mine") GS.gone.add(g); }); GS.on.clear(); saveMode(); wlSel.clear(); wlOpen.clear();
-  if (keys.length) wlPatch(keys.map(k => patchOne(k, {mine:false, hidden:false}))); else wlRefresh();
-  offerUndo("Poori watchlist clear ki", snap);
-};
+const modeClick = e => { const b = e.target.closest("[data-wmode]"); if (!b) return; const g = b.dataset.wmode;
+  GS.on.has(g) ? GS.on.delete(g) : GS.on.add(g); saveMode(); wlSel.clear(); wlForce = ""; wlLimit = 100; wlRefresh(); };
+$("wlmodeF").onclick = modeClick; $("wlmodeM").onclick = modeClick;
+const tagClick = e => { const b = e.target.closest("[data-wtf]"); if (!b) return; const t = b.dataset.wtf; wlTags.has(t) ? wlTags.delete(t) : wlTags.add(t); wlLimit = 100; renderWl(); };
+$("wltagsA").onclick = tagClick; $("wltagsM").onclick = tagClick;
 $("wlbody").addEventListener("click", e => {
   let b;
   if ((b = e.target.closest("input[data-sel]"))) { e.stopPropagation(); const k = b.dataset.sel; b.checked ? wlSel.add(k) : wlSel.delete(k); renderWl(); return; }
+  if ((b = e.target.closest("[data-wlist]"))) { saveNote(b.dataset.k); togglePick(b.dataset.k, +b.dataset.wlist); return; }
   if ((b = e.target.closest("[data-wtag]"))) { const k = b.dataset.k, t = b.dataset.wtag, cur = getIt(k).tags;
     saveNote(k); wlPatch([patchOne(k, {tags: cur.includes(t) ? cur.filter(x => x !== t) : cur.concat(t)})]); return; }
   if ((b = e.target.closest("[data-wnewtag]"))) { const k = b.dataset.wnewtag, inp = document.getElementById("wlnt-"+k);
     const t = (inp.value || "").replace(/[,]/g, " ").trim().replace(/\s+/g, " "); if (!t) return;
     const cur = getIt(k).tags; saveNote(k); if (!cur.includes(t)) wlPatch([patchOne(k, {tags:cur.concat(t)})]); return; }
   if ((b = e.target.closest("[data-wsave]"))) { saveNote(b.dataset.wsave); b.textContent = "✓ Saved"; return; }
-  if ((b = e.target.closest("[data-wmine]"))) { addMine([BYK.get(b.dataset.wmine)].filter(Boolean)); return; }
-  if ((b = e.target.closest("[data-wdel]"))) { e.stopPropagation(); saveNote(b.dataset.wdel); removeKeys([b.dataset.wdel], getIt(b.dataset.wdel).sym); return; }
   const tr = e.target.closest("tr.r");
-  if (tr) { const k = tr.dataset.wk; wlOpen.has(k) ? wlOpen.delete(k) : wlOpen.add(k); if (wlOpen.has(k)) loadWlHist(); renderWl(); }
+  if (tr) { const k = tr.dataset.wk; wlOpen.has(k) ? wlOpen.delete(k) : wlOpen.add(k); if (wlOpen.has(k)) loadHist(k); renderWl(); }
 });
 $("wlbody").addEventListener("focusout", e => {
   if (e.target.matches("textarea[data-k]")) saveNote(e.target.dataset.k);
   setTimeout(() => { if (wlDirty && !(document.activeElement && document.activeElement.closest && document.activeElement.closest("#wlbody textarea, #wlbody input[type=text], #wlbody input:not([type])"))) renderWl(); }, 0);
 });
 $("wlq").addEventListener("input", () => { wlLimit = 100; renderWl(); });
-$("wlsort").addEventListener("input", () => { wlLimit = 100; renderWl(); });
 $("wlmore").onclick = () => { wlLimit += 100; renderWl(); };
-function loadWlHist(){
-  if (wlHist) return;
-  wlHist = {dates:[], r:{}};
-  fetch("wl_hist.json").then(r => r.ok ? r.json() : null).then(j => { if (j) { wlHist = j; if (!$("v-wl").hidden) renderWl(); } }).catch(() => {});
-}
 
-// --- Google Sheet connection
+// ---- Google Sheet connection
 $("wlconnect").onclick = () => {
   const url = $("wlurl").value.trim(), key = $("wlkey").value.trim();
   if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) { wlStatus("⚠ URL https://script.google.com/macros/s/…/exec jaisa hona chahiye"); return; }
   store.set(WLK.api, JSON.stringify({url, key}));
-  if (WL.size) { wlQueue.unshift({op:"patch", items:[...WL.values()].map(i => patchOne(i.k, {notes:i.notes, tags:i.tags, mine:i.mine, hidden:i.hidden}))}); wlSaveQueue(); }  // copy what is already in this browser into the Sheet
+  if (WL.size) { wlQueue.unshift({op:"patch", items:[...WL.values()].map(i => patchOne(i.k, {notes:i.notes, tags:i.tags, lists:i.lists, oldDel:i.oldDel}))}); wlSaveQueue(); }  // copy this browser's lists into the Sheet
   wlErr = ""; wlSync();
 };
 $("wldisc").onclick = () => { if (confirm("Sheet se connection hatana hai? Watchlist ki copy is browser mein rahegi.")) { store.set(WLK.api, ""); wlQueue = []; wlSaveQueue(); wlErr = ""; wlRefresh(); } };
 $("wlexport").onclick = () => {
   const q = v => `"${String(v??"").replace(/"/g,'""')}"`;
-  const lines = [["Rank","Symbol","Exchange","Name","Groups","Score","Close","Chg_1D","Tags","Notes"].join(",")].concat(wlFiltered(wlRanks()).map(k => {
-    const it = getIt(k), s = BYK.get(k) || {ch:{}};
-    return [RANK.get(k)||"", it.sym, it.ex, s.n||it.name, groupsOf(k).map(g => GLABEL[g]).join("; "), s.ms, s.c, s.ch["1D"], it.tags.join("; "), it.notes].map(q).join(","); }));
+  const lines = [["Rank","Symbol","Exchange","Name","Lists","Score","Close","Chg_1D","Auto_tags","My_tags","Notes"].join(",")].concat(wlFiltered(wlRanks()).map(k => {
+    const it = getIt(k), s = BYK.get(k), lab = [...FIXED.filter(([id]) => FSET[id].has(k)).map(x => x[1]), ...it.lists.map(n => "Watchlist " + n), ...(oldOf(k).length ? ["Hataye gaye"] : [])];
+    return [RANK.get(k)||"", symOf(k), it.ex, s ? s.n : it.name, lab.join("; "), s && s.ms, s && px(s).c, s && px(s).d1, autoOf(s).join("; "), it.tags.join("; "), it.notes].map(q).join(","); }));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([lines.join("\n")], {type:"text/csv"}));
   a.download = `watchlist_${M.asOf.replace(/ /g,"")}.csv`; a.click();
@@ -2127,6 +2423,7 @@ function wlInit(){
   loadMode();
   const a = wlApi();
   if (a) { $("wlurl").value = a.url || ""; $("wlkey").value = a.key || ""; }
+  saveRankHistory();
   wlRefresh(); wlSync();
   window.addEventListener("online", () => wlSync());
 }
