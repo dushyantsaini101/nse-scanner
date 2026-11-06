@@ -12,7 +12,12 @@ Run locally: `pip install requests` then `python nse_scanner.py`.
 
 ## Watchlist tab
 
-- Add stocks: paste symbols (`RELIANCE, NSE:TCS, BSE:500325`, comma / space / new line),
+- Ready-made groups rebuilt by the daily workflow: **F&O** (NSE's official F&O securities list,
+  `fo_mktlots.csv`), **NSE SME**, **BSE SME**, **Nifty 50**, **Nifty 500**, plus **Meri list** (stocks added by hand).
+  "Aaj ka mode" chips switch groups on/off (several at once, remembered in the browser); rank and score
+  order are worked out within the groups that are on. Removing stocks (checkboxes, Group hatao, Sab clear karo)
+  never deletes notes or tags, and can be undone for 10 seconds.
+- Add stocks to Meri list: paste symbols (`RELIANCE, NSE:TCS, BSE:500325`, comma / space / new line),
   **+ WL** button on every scanner row, CSV import (e.g. a Kite watchlist export), or a whole
   index (any Nifty index, all NSE SME, all BSE SME).
 - **Momentum Score 0–100**, recalculated daily from end-of-day data (also a column / sort in the scanner):

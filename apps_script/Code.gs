@@ -10,7 +10,9 @@
  */
 
 const TAB = 'Watchlist';
-const HEAD = ['Key', 'Symbol', 'Exchange', 'Name', 'Added', 'Tags', 'Notes', 'Updated'];
+// Version 2: "In Meri list" (added by hand) and "Hidden" (removed from the watchlist, notes kept).
+// Rows from version 1 have these empty and count as Meri list.
+const HEAD = ['Key', 'Symbol', 'Exchange', 'Name', 'Added', 'Tags', 'Notes', 'Updated', 'In Meri list', 'Hidden'];
 const KEY_RE = /^[NB]_[A-Za-z0-9_-]{1,40}$/;
 
 /** Run once from the editor: creates the tab and the secret key. */
@@ -40,10 +42,12 @@ function newKey() {
 function doGet(e) {
   const p = (e && e.parameter) || {};
   if (!keyOk_(p.key)) return out_({ok: false, error: badKeyMsg_()});
-  return out_({ok: true, items: read_(sheet_())});
+  return out_({ok: true, version: 2, items: read_(sheet_())});
 }
 
-/** Body (sent as text/plain): {"key": "...", "ops": [{op:"add", items:[...]}, {op:"remove", keys:[...]}, {op:"update", k, notes, tags}]} */
+/** Body (sent as text/plain): {"key": "...", "ops": [...]}
+ *  ops: {op:"patch", items:[{k, sym, ex, name, notes?, tags?, mine?, hidden?}]}  (create or change)
+ *       {op:"add", items:[...]}  {op:"remove", keys:[...]}  {op:"update", k, notes, tags}  (version 1) */
 function doPost(e) {
   let body;
   try {
@@ -61,7 +65,7 @@ function doPost(e) {
     (body.ops || []).forEach(op => applyOp_(map, op, now));
     const items = Array.from(map.values());
     write_(sh, items);
-    return out_({ok: true, items: items});
+    return out_({ok: true, version: 2, items: items});
   } finally {
     lock.releaseLock();
   }
@@ -69,6 +73,24 @@ function doPost(e) {
 
 function applyOp_(map, op, now) {
   if (!op || typeof op !== 'object') return;
+  if (op.op === 'patch') {
+    (op.items || []).forEach(it => {
+      if (!it || !KEY_RE.test(String(it.k))) return;
+      let e = map.get(it.k);
+      if (!e) {
+        e = {k: it.k, sym: str_(it.sym, 40), ex: str_(it.ex, 5), name: str_(it.name, 120),
+             added: str_(it.added, 10) || now.slice(0, 10), tags: [], notes: '', mine: false, hidden: false};
+        map.set(it.k, e);
+      }
+      if (it.notes != null) e.notes = str_(it.notes, 5000);
+      if (it.tags) e.tags = tags_(it.tags);
+      if (it.mine != null) e.mine = !!it.mine;
+      if (it.hidden != null) e.hidden = !!it.hidden;
+      e.updated = now;
+      if (!e.mine && !e.hidden && !e.notes && !e.tags.length) map.delete(it.k);   // nothing left to keep
+    });
+    return;
+  }
   if (op.op === 'add') {
     (op.items || []).forEach(it => {
       if (!it || !KEY_RE.test(String(it.k))) return;
@@ -77,12 +99,14 @@ function applyOp_(map, op, now) {
         map.set(it.k, {
           k: it.k, sym: str_(it.sym, 40), ex: str_(it.ex, 5), name: str_(it.name, 120),
           added: str_(it.added, 10) || now.slice(0, 10),
-          tags: tags_(it.tags), notes: str_(it.notes, 5000), updated: now
+          tags: tags_(it.tags), notes: str_(it.notes, 5000), updated: now,
+          mine: it.mine == null ? true : !!it.mine, hidden: !!it.hidden
         });
       } else {
         if (!e.notes && it.notes) e.notes = str_(it.notes, 5000);
         const t = tags_(it.tags);
         if (t.length) e.tags = Array.from(new Set(e.tags.concat(t)));
+        if (it.mine != null) e.mine = e.mine || !!it.mine;
         e.updated = now;
       }
     });
@@ -101,8 +125,8 @@ function sheet_() {
   const ss = SpreadsheetApp.getActive();
   let sh = ss.getSheetByName(TAB);
   if (!sh) sh = ss.insertSheet(TAB, 0);
-  if (sh.getLastRow() === 0) {
-    sh.getRange(1, 1, 1, HEAD.length).setValues([HEAD]).setFontWeight('bold');
+  if (sh.getLastRow() === 0 || sh.getRange(1, HEAD.length).getValue() !== HEAD[HEAD.length - 1]) {
+    sh.getRange(1, 1, 1, HEAD.length).setValues([HEAD]).setFontWeight('bold');   // new sheet, or upgrade from version 1
     sh.setFrozenRows(1);
   }
   return sh;
@@ -115,7 +139,8 @@ function read_(sh) {
     .filter(r => KEY_RE.test(r[0]))
     .map(r => ({
       k: r[0], sym: r[1], ex: r[2], name: r[3], added: r[4],
-      tags: tags_(r[5].split(',')), notes: r[6], updated: r[7]
+      tags: tags_(r[5].split(',')), notes: r[6], updated: r[7],
+      mine: r[8] === '' ? true : r[8].toLowerCase() === 'yes', hidden: r[9].toLowerCase() === 'yes'
     }));
 }
 
@@ -125,7 +150,8 @@ function write_(sh, items) {
   if (!items.length) return;
   const rng = sh.getRange(2, 1, items.length, HEAD.length);
   rng.setNumberFormat('@');                     // plain text: no auto dates / numbers
-  rng.setValues(items.map(i => [i.k, i.sym, i.ex, i.name, i.added, i.tags.join(', '), i.notes, i.updated].map(safe_)));
+  rng.setValues(items.map(i => [i.k, i.sym, i.ex, i.name, i.added, i.tags.join(', '), i.notes, i.updated,
+                                i.mine === false ? 'no' : 'yes', i.hidden ? 'yes' : 'no'].map(safe_)));
 }
 
 function keyOk_(k) {
