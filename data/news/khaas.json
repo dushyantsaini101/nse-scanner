@@ -1,0 +1,30 @@
+{
+"date": "2026-11-06",
+"updated": "2026-11-06T13:12",
+"final": false,
+"site": "https://dushyantsaini101.github.io/nse-scanner/",
+"items": [
+{
+"why": "Results",
+"k": "N_SAILIFE",
+"sym": "SAILIFE",
+"score": 60,
+"chg": 3.13,
+"t": "2026-11-06T00:12",
+"title": "Press release dated November 05, 2026, titled \"Press Release on Financial Results \".",
+"url": "https://nsearchives.nseindia.com/corporate/SAILIFE_06112026001244_Stx_Press_Release_05112026_Signed.pdf",
+"src": "NSE"
+},
+{
+"why": "Order / contract",
+"k": "N_MARINE",
+"sym": "MARINE",
+"score": 63,
+"chg": -0.85,
+"t": "2026-11-06T11:43",
+"title": "Bagging/Receiving of orders/contracts",
+"url": "https://nsearchives.nseindia.com/corporate/MARINE_06112026114227_Signed_R_Final_Regulation_30_06112026.pdf",
+"src": "NSE"
+}
+]
+}
