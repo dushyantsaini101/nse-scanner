@@ -1,0 +1,46 @@
+name: Update news
+
+on:
+  schedule:
+    # Market days (Mon-Fri), every 30 minutes from 9:00 AM to 4:00 PM IST (= 03:30-10:30 UTC) ...
+    - cron: "30 3-10 * * 1-5"
+    - cron: "0 4-10 * * 1-5"
+    # ... and once in the evening, 8:30 PM IST, after the scanner's daily run (bulk/block deals, late results)
+    - cron: "0 15 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: news
+  cancel-in-progress: false
+
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch news
+        env:
+          TZ: Asia/Kolkata
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+        run: |
+          pip install requests
+          # a broken source is skipped inside news.py; if the whole run fails, keep the earlier news
+          python news.py || echo "::warning::news.py failed - the earlier news stays on the site"
+      - name: Save news
+        run: |
+          git config user.name "scanner-bot"
+          git config user.email "scanner-bot@users.noreply.github.com"
+          git add data/news
+          git commit -q -m "News $(TZ=Asia/Kolkata date '+%d-%b %H:%M')" || { echo "no change"; exit 0; }
+          for i in 1 2 3 4 5; do
+            git pull -q --rebase && git push -q && exit 0
+            sleep $((i * 5))
+          done
+          echo "::warning::could not push the news update"

@@ -11,6 +11,9 @@
  *      (Pehle se deployed ho to: Deploy → Manage deployments → ✏️ → Version: New version → Deploy.)
  *   4. Web app URL + secret key website ke Watchlist tab → "Google Sheet connection" mein daalo.
  * Sheets made by version 1 or 2 are upgraded automatically ("Meri list" becomes Watchlist 1).
+ *
+ * Daily email "Aaj ki khaas khabar" (optional): function list mein "setupEmail" chuno → Run → permission do.
+ * Ek test email turant aayegi; phir har market wale din shaam ko. Band karna ho to "stopEmail" chalao.
  */
 
 const VERSION = 3;
@@ -216,6 +219,96 @@ function histFor_(k) {
     .map(cell => sh.getRange(cell.getRow(), 1, 1, HIST_HEAD.length).getDisplayValues()[0])
     .map(r => [r[0], Number(r[1]), Number(r[2]), Number(r[5])])
     .sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+}
+
+// ---------------------------------------------------------------- daily email: "Aaj ki khaas khabar"
+// The GitHub workflow writes data/news/khaas.json (public filings / deals only). This script reads it, adds
+// today's news of the stocks in your Watchlist 1-5 (from this Sheet), and mails it to you once every market evening.
+const NEWS_URL = 'https://raw.githubusercontent.com/dushyantsaini101/nse-scanner/main/data/news/';
+const SITE_URL = 'https://dushyantsaini101.github.io/nse-scanner/';
+const CAT_NAME = {R: 'Results', O: 'Order/Contract', D: 'Dividend/Bonus/Split', B: 'Board Meeting', F: 'Fund Raise',
+                  P: 'Promoter/Insider', K: 'Bulk/Block Deal', M: 'Media News'};
+
+/** Run once from the editor: turns the daily email on and sends a test email right away. */
+function setupEmail() {
+  stopEmail();
+  ScriptApp.newTrigger('dailyNewsEmail').timeBased().everyHours(1).create();
+  Logger.log('Daily email ON: ' + Session.getEffectiveUser().getEmail() +
+             ' pe har market wale din shaam ~9-11 baje aayega. Abhi ek test email bhej raha hoon.');
+  dailyNewsEmail(true);
+}
+
+/** Run to turn the daily email off. */
+function stopEmail() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'dailyNewsEmail')
+    .forEach(t => ScriptApp.deleteTrigger(t));
+}
+
+/** Runs every hour; sends once a day, after the evening news update (or at 11 PM with what is there). */
+function dailyNewsEmail(test) {
+  test = test === true;
+  const props = PropertiesService.getScriptProperties();
+  const now = new Date();
+  const today = Utilities.formatDate(now, 'Asia/Kolkata', 'yyyy-MM-dd');
+  const hour = Number(Utilities.formatDate(now, 'Asia/Kolkata', 'H'));
+  if (!test && (props.getProperty('MAIL_SENT') === today || hour < 19)) return;
+  const kh = fetchJson_(NEWS_URL + 'khaas.json');
+  const to = Session.getEffectiveUser().getEmail();
+  if (!kh || kh.date !== today) {
+    if (test) MailApp.sendEmail({to: to, name: 'Stock Scanner', subject: 'Test: Stock Scanner daily email chal raha hai',
+      htmlBody: '<p>Email setup ho gaya. Aaj ki khabar abhi bani nahi (market band ya update baaki). ' +
+                'Market wale din shaam ko "Aaj ki khaas khabar" aayegi.</p><p><a href="' + SITE_URL + '">Website kholo</a></p>'});
+    return;
+  }
+  if (!test && !kh.final && hour < 23) return;          // wait for the evening update
+  let mine = [];
+  try {
+    const keys = new Set(read_(sheet_()).filter(i => i.lists.length).map(i => i.k));
+    if (keys.size) {
+      const day = fetchJson_(NEWS_URL + today + '.json');
+      mine = ((day && day.items) || []).filter(it => keys.has(it[2])).slice(0, 60);
+    }
+  } catch (err) { /* watchlist part is optional */ }
+  const items = kh.items || [];
+  const dt = Utilities.formatDate(now, 'Asia/Kolkata', 'd MMM yyyy');
+  const pct = v => v == null ? '' : ' <span style="color:' + (v >= 0 ? '#0a8a4a' : '#c62828') + '">' + (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%</span>';
+  const link = (url, text) => /^https?:\/\//.test(url || '') ? '<a href="' + esc_(url) + '">' + text + '</a>' : text;
+  let html = '<div style="font-family:Arial,sans-serif;font-size:14px;max-width:640px">';
+  html += '<h2 style="margin:0 0 4px">Aaj ki khaas khabar · ' + dt + '</h2>' +
+          '<div style="color:#666;font-size:12px;margin-bottom:12px">Results, bade orders, promoter buying aur bulk/block buying — ' +
+          'Momentum Score 60+ wale stocks (promoter buying aur ₹500 Cr+ orders sab stocks ke). Score kal ke close se.</div>';
+  if (!items.length) html += '<p>Aaj koi khaas khabar nahi mili.</p>';
+  let last = '';
+  items.forEach(x => {
+    if (x.why !== last) { html += '<h3 style="margin:14px 0 4px;font-size:15px">' + esc_(x.why) + '</h3>'; last = x.why; }
+    html += '<div style="padding:6px 0;border-bottom:1px solid #eee"><b>' + esc_(x.sym) + '</b> <span style="color:#666">score ' + x.score + '</span>' +
+            pct(x.chg) + '<br>' + link(x.url, esc_(x.title)) + ' <span style="color:#999;font-size:12px">' + esc_(x.src) + ' · ' + esc_(String(x.t).slice(11, 16)) + '</span></div>';
+  });
+  if (mine.length) {
+    html += '<h3 style="margin:18px 0 4px;font-size:15px">Aapki Watchlist ki aaj ki khabar (' + mine.length + ')</h3>';
+    mine.forEach(it => {
+      html += '<div style="padding:6px 0;border-bottom:1px solid #eee"><b>' + esc_(it[3]) + '</b> <span style="color:#666">' +
+              esc_(String(it[4]).split('').map(c => CAT_NAME[c] || c).join(', ')) + '</span><br>' +
+              link(it[6], esc_(it[5])) + ' <span style="color:#999;font-size:12px">' + esc_(it[7]) + ' · ' + esc_(String(it[1]).slice(11, 16)) + '</span></div>';
+    });
+  }
+  html += '<p style="margin-top:16px"><a href="' + SITE_URL + '">Website ka News tab kholo</a> · Not investment advice.</p>' +
+          '<p style="color:#999;font-size:11px">Band karna ho to Apps Script mein stopEmail() chalao.</p></div>';
+  MailApp.sendEmail({to: to, name: 'Stock Scanner', htmlBody: html,
+                     subject: (test ? 'Test: ' : '') + 'Aaj ki khaas khabar · ' + dt + ' (' + items.length + ')'});
+  if (!test) props.setProperty('MAIL_SENT', today);
+}
+
+function fetchJson_(url) {
+  try {
+    const r = UrlFetchApp.fetch(url + '?v=' + Date.now(), {muteHttpExceptions: true});
+    return r.getResponseCode() === 200 ? JSON.parse(r.getContentText()) : null;
+  } catch (err) {
+    return null;
+  }
+}
+function esc_(t) {
+  return String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 }
 
 function keyOk_(k) {

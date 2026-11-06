@@ -1148,13 +1148,27 @@ button.tg.addc{color:var(--up)} button.tg.remc{color:var(--dn)}
 #pick .pickbox{background:var(--card);border-radius:14px 14px 0 0;padding:16px;width:100%;max-width:520px;box-shadow:0 -4px 20px rgba(0,0,0,.2)}
 #pick button.tg{padding:9px 14px;font-size:14px}
 @media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .chart.withrsi{height:350px} .stat b{font-size:16px} .stat{min-width:96px}}
+.ni{padding:10px 2px;border-bottom:1px solid var(--line)} .ni:last-child{border-bottom:0}
+.ni .nh{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px}
+.ni .nl{display:block;color:var(--ink);text-decoration:none;margin:5px 0 3px;line-height:1.4;font-size:14px}
+.ni a.nl:hover{text-decoration:underline}
+.ni small{color:var(--mute);font-size:11px} .ni small a{color:var(--acc)}
+.ni .nt{margin-left:auto;color:var(--mute);font-size:11px} .nchg{font-weight:600;font-size:12px}
+button.nstk{border:0;background:none;padding:0;font:inherit;font-size:14px;color:var(--acc);cursor:pointer}
+.ncat{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg);border:1px solid var(--line);color:var(--mute);white-space:nowrap}
+.ncat.R,.ncat.O,.ncat.P{background:var(--upbg);color:var(--up);border-color:transparent}
+.ncat.K,.ncat.F{background:var(--ambbg);color:var(--amb);border-color:transparent}
+.ncat.D,.ncat.B{background:var(--accbg);color:var(--acc);border-color:transparent}
+.nday{font-weight:700;font-size:12px;margin:14px 0 2px;color:var(--mute);text-transform:uppercase;letter-spacing:.03em} .nday:first-child{margin-top:0}
+@media (max-width:480px){.tabs button{padding:7px 10px;font-size:13px}}
+button.nwb{border:0;background:none;padding:0 2px;font-size:14px;line-height:1;cursor:pointer;vertical-align:middle;margin-left:4px}
 </style></head><body>
 <div id="fs" hidden><div class="fshead"><span id="fsname"></span><span class="cbtns"><a id="fsnew" target="_blank" rel="noopener">Naye tab mein ↗</a><a id="fstv" target="_blank" rel="noopener">TradingView ↗</a><button class="btn sm" id="fsclose">✕ Band karo</button></span></div><div class="indbar" id="fsind"></div><div id="fschart"></div><div class="chartbar"><span id="fsleg"></span></div></div>
 <div id="ticker" hidden><div class="tk" id="tk"></div></div>
 <div id="undo" hidden><span id="undomsg"></span><button class="btn sm" id="undobtn">Undo</button></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
-<nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="wl">Watchlist</button><button data-v="pf">Mera Portfolio</button></nav></header>
+<nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="wl">Watchlist</button><button data-v="news">News</button><button data-v="pf">Mera Portfolio</button></nav></header>
 <div class="wrap" id="v-wl" hidden>
   <div class="panel">
     <div class="row" style="justify-content:space-between;align-items:center"><b>Watchlist</b><span class="sub" id="wlsync"></span></div>
@@ -1196,6 +1210,23 @@ button.tg.addc{color:var(--up)} button.tg.remc{color:var(--dn)}
   <div class="foot" id="wlfoot"></div>
 </div>
 <div id="pick" hidden><div class="pickbox"><div id="pickt"></div><div class="chips" id="pickl" style="margin:10px 0"></div><button class="btn" id="pickx">Ho gaya</button></div></div>
+<div class="wrap" id="v-news" hidden>
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;align-items:center"><b>News</b><span class="sub" id="nsync"></span></div>
+    <div class="row">
+      <label class="l grow">Kaunse stocks<select id="nfilter"></select></label>
+      <label class="l">Kitne din<select id="ndays"><option value="1">Aaj</option><option value="2">Aaj + kal</option><option value="7">7 din</option><option value="30">30 din</option></select></label>
+    </div>
+    <div class="mlab">Category <small>· kai chun sakte ho · kuch na chuno to sab</small></div>
+    <div class="chips" id="ncats"></div>
+    <div class="row"><input type="search" id="nq" placeholder="Search symbol, naam ya khabar…"></div>
+    <div id="nonly"></div>
+  </div>
+  <details class="panel" id="ncal" hidden><summary><b>Upcoming Results</b> <span class="na" id="ncaln"></span></summary><div id="ncallist"></div></details>
+  <div class="panel" id="nlist"></div>
+  <div class="pager"><span id="ninfo"></span><span><button class="btn" id="nmore">Aur dikhao</button></span></div>
+  <div class="foot" id="nfoot"></div>
+</div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
     <b>Portfolio sheet ka link</b>
@@ -2244,7 +2275,7 @@ function renderWl(order){
     if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
     const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
-      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
+      <td class="l sym"><b>${esc(s.s)}</b>${newsBtn(k)}${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
@@ -2428,19 +2459,147 @@ function wlInit(){
   window.addEventListener("online", () => wlSync());
 }
 
+// ---------- News tab. Data: data/news/ in the GitHub repo (public filings / deals / headlines only),
+// refreshed every 30 min on market days by .github/workflows/news.yml. Watchlist filtering happens here in the browser.
+var NX = null, nErr = "", nLimit = 100;
+const NEWS_BASE = store.get("news_base") || "https://raw.githubusercontent.com/dushyantsaini101/nse-scanner/main/data/news/";
+const NCATS = [["R","Results"],["O","Order/Contract"],["D","Dividend/Bonus/Split"],["B","Board Meeting"],["F","Fund Raise"],["P","Promoter/Insider"],["K","Bulk/Block Deal"],["M","Media News"]];
+const NCAT = Object.fromEntries(NCATS);
+const NSRC = {nse_filings:"NSE filings", bse_filings:"BSE filings", nse_board_meetings:"Board meetings", nse_corp_actions:"Corporate actions",
+  nse_insider:"Promoter/insider", nse_deals:"Bulk/block deals", google_news:"Google News"};
+const NDAYS = new Map();
+const NS = Object.assign({f:"all", days:2}, jget("news_f", {}), {q:"", k:""});   // k: only this stock (from 📰)
+const nCats = new Set(jget("news_cats", []));
+const istToday = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+const isoAdd = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
+const nUrl = f => NEWS_BASE + f + "?v=" + Math.floor(Date.now() / 3e5);
+const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : "";
+function nSave(){ store.set("news_f", JSON.stringify({f:NS.f, days:NS.days})); store.set("news_cats", JSON.stringify([...nCats])); }
+function newsToday(k){ return NX && NX.todayDate === istToday() && NX.today ? NX.today[k] : null; }
+function newsBtn(k){ const n = newsToday(k); return n ? `<button class="nwb" data-nk="${esc(k)}" title="Aaj ki ${n[0]} khabar: ${esc([...n[1]].map(c => NCAT[c] || c).join(", "))}" aria-label="Aaj ki news">📰</button>` : ""; }
+
+async function newsIndex(){
+  try { const r = await fetch(nUrl("index.json")); if (!r.ok) throw new Error("HTTP " + r.status); NX = await r.json(); nErr = ""; }
+  catch (e) { nErr = "News load nahi hui (" + e.message + "). Internet check karo, phir page refresh karo."; }
+  if (!$("v-wl").hidden) renderWl();
+  if (!$("v-news").hidden) newsShow();
+}
+function nDates(){
+  if (!NX) return [];
+  const t = istToday(), from = isoAdd(t, -(NS.days - 1));
+  return (NX.days || []).filter(d => d >= from && d <= t);
+}
+let nBusy = 0;
+async function newsShow(){
+  const need = nDates().filter(d => !NDAYS.has(d));
+  if (need.length) {
+    const my = ++nBusy;
+    $("nlist").innerHTML = `<div class="na" style="padding:16px 4px">News load ho rahi hai…</div>`;
+    await Promise.all(need.map(d => fetch(nUrl(d + ".json")).then(r => r.ok ? r.json() : null)
+      .then(j => { if (j && j.items) NDAYS.set(d, j.items); }).catch(() => {})));
+    if (my !== nBusy) return;
+  }
+  renderNews();
+}
+function nIn(k){
+  const f = NS.f;
+  if (f === "all") return true;
+  if (f === "wall") return getIt(k).lists.length > 0;
+  if (/^w\d$/.test(f)) return getIt(k).lists.includes(+f.slice(1));
+  return FSET[f] ? FSET[f].has(k) : true;
+}
+function nQ(k, sym, text, q){
+  if (!q) return true;
+  const s = BYK.get(k);
+  return (s ? s.s : sym || "").toUpperCase().includes(q) || (s && s.n.toUpperCase().includes(q)) || (text || "").toUpperCase().includes(q);
+}
+function newsItem(it){
+  const [, t, k, sym, cats, h, u, src] = it, s = BYK.get(k), url = safeUrl(u);
+  const p = s ? px(s) : null;
+  const chg = p && p.d1 != null ? `<span class="nchg" style="color:${p.d1 > 0 ? "var(--up)" : p.d1 < 0 ? "var(--dn)" : "var(--mute)"}">${sgn(p.d1)}</span>` : "";
+  const lab = cats.includes("M") ? "Khabar padho ↗" : /\.pdf(\?|$)/i.test(url) ? "PDF ↗" : /\.zip(\?|$)/i.test(url) ? "ZIP ↗" : "Link ↗";
+  const a = x => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer"${x}`;
+  return `<div class="ni"><div class="nh"><button class="nstk" data-tk="${esc(k)}" title="Stock ki details"><b>${esc(s ? s.s : sym)}</b></button>${s ? scoreChip(s.ms) : ""}${chg}`
+    + `${[...cats].map(c => `<span class="ncat ${c}">${esc(NCAT[c] || c)}</span>`).join("")}</div>`
+    + `${url ? a(` class="nl">${esc(h)}</a>`) : `<div class="nl">${esc(h)}</div>`}`
+    + `<small>${esc(t.slice(11, 16))} · ${esc(src)}${url ? ` · ${a(`>${lab}</a>`)}` : ""}</small></div>`;
+}
+function dayLabel(d){ const t = istToday(); return (d === t ? "Aaj · " : d === isoAdd(t, -1) ? "Kal · " : "") + fdIso(d); }
+function renderNews(){
+  const opts = [["all", `Sab stocks`], ["wall", `Meri Watchlist 1–5 (sab)`],
+    ...MYL.map(([id, name]) => [id, `${name} (${members(id).length})`]), ...FIXED.map(([id, name]) => [id, `${name} (${FSET[id].size})`])];
+  $("nfilter").innerHTML = opts.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join("");
+  $("nfilter").value = NS.f; $("ndays").value = String(NS.days);
+  const q = NS.q.trim().toUpperCase();
+  const base = [];
+  nDates().forEach(d => (NDAYS.get(d) || []).forEach(it => { if ((NS.k ? it[2] === NS.k : nIn(it[2])) && nQ(it[2], it[3], it[5], q)) base.push(it); }));
+  const cnt = {};
+  base.forEach(it => [...it[4]].forEach(c => { cnt[c] = (cnt[c] || 0) + 1; }));
+  $("ncats").innerHTML = NCATS.map(([c, t]) => `<button class="tg${nCats.has(c) ? " on" : ""}" data-ncat="${c}">${esc(t)} <small>${fmtInt(cnt[c] || 0)}</small></button>`).join("");
+  const list = nCats.size ? base.filter(it => [...it[4]].some(c => nCats.has(c))) : base;
+  list.sort((a, b) => a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0);
+  let html = "", day = "";
+  list.slice(0, nLimit).forEach(it => {
+    const d = it[1].slice(0, 10);
+    if (d !== day) { day = d; html += `<div class="nday">${dayLabel(d)}</div>`; }
+    html += newsItem(it);
+  });
+  $("nonly").innerHTML = NS.k ? `<div class="chips" style="margin-top:8px"><button class="tg on" id="nonlyx">Sirf ${esc(symOf(NS.k))} ✕</button></div>` : "";
+  const emptyList = !NS.k && NS.f !== "all" && !(NS.f === "wall" ? [1,2,3,4,5].some(n => members("w" + n).length) : members(NS.f).length);
+  $("nlist").innerHTML = html || `<div class="na" style="padding:16px 4px">${nErr ? esc(nErr) : !NX ? "News load ho rahi hai…"
+    : emptyList ? "Is list mein abhi koi stock nahi. Watchlist tab mein stocks add karo." : "Is filter mein koi khabar nahi. Din badhao ya category hatao."}</div>`;
+  $("ninfo").textContent = list.length ? `${fmtInt(Math.min(nLimit, list.length))} / ${fmtInt(list.length)} khabrein · stock ke naam pe tap karo details ke liye` : "";
+  $("nmore").hidden = list.length <= nLimit;
+  renderCal(q);
+  $("nsync").textContent = NX && NX.updated ? `Updated ${fdIso(NX.updated.slice(0, 10))}, ${NX.updated.slice(11)}` : "";
+  const srcs = NX ? Object.entries(NX.status || {}).map(([k, v]) => `${NSRC[k] || k} ${v[0] === "ok" ? "✓" : "✗"}`).join(" · ") : "—";
+  $("nfoot").innerHTML = `Sources: ${esc(srcs)} (✗ = is baar us source se data nahi mila, baaki chalte rahe). News market wale din 9 AM se 4 PM tak har 30 min aur shaam ko ek baar update hoti hai (GitHub kabhi 10–20 min late chalata hai); 30 din tak rakhi jaati hai. Filings ka link exchange ki original PDF hai. BSE: sirf BSE-only stocks ki filings (NSE wale stocks ki wahi filing NSE pe aati hai). Media News: Google News se sirf headline, source, time aur link; Nifty 500, F&amp;O, IPO, top score aur aaj filing wale stocks ke liye. Score aur % change ${esc(M.asOf)} ke end-of-day data se. Not investment advice.`;
+}
+function renderCal(q){
+  const t = istToday();
+  const cal = ((NX && NX.cal) || []).filter(c => c[0] >= t && (NS.k ? c[1] === NS.k : nIn(c[1])) && nQ(c[1], c[2], "", q));
+  $("ncal").hidden = !NX;
+  $("ncaln").textContent = `(${fmtInt(cal.length)} stocks · agle 7 din)`;
+  if (cal.length && cal.length <= 40 && !$("ncal").dataset.init) { $("ncal").open = true; $("ncal").dataset.init = 1; }
+  const by = new Map();
+  cal.forEach(c => { if (!by.has(c[0])) by.set(c[0], []); by.get(c[0]).push(c); });
+  const MAX = 60;
+  $("ncallist").innerHTML = [...by.entries()].map(([d, cs]) => {
+    cs.sort((a, b) => ((BYK.get(b[1]) || {}).ms || 0) - ((BYK.get(a[1]) || {}).ms || 0));
+    return `<div class="chgrow"><b>${dayLabel(d)} <span class="na">(${cs.length})</span></b><div class="chips">${cs.slice(0, MAX).map(c => { const s = BYK.get(c[1]);
+      return `<button class="tg" data-tk="${esc(c[1])}"><b>${esc(s ? s.s : c[2])}</b>${s ? ` <small>${s.ms}</small>` : ""}</button>`; }).join("")}`
+      + `${cs.length > MAX ? `<span class="na" style="align-self:center">+${cs.length - MAX} aur (score ke hisaab se top ${MAX}; list chuno ya search karo)</span>` : ""}</div></div>`;
+  }).join("") || `<div class="na" style="margin-top:8px">Agle 7 din mein ${NS.f === "all" ? "" : "is list ke "}kisi stock ki results date nahi mili.</div>`;
+}
+$("nfilter").addEventListener("input", e => { NS.f = e.target.value; NS.k = ""; nLimit = 100; nSave(); renderNews(); });
+$("ndays").addEventListener("input", e => { NS.days = +e.target.value; nLimit = 100; nSave(); newsShow(); });
+$("nq").addEventListener("input", e => { NS.q = e.target.value; nLimit = 100; renderNews(); });
+$("ncats").onclick = e => { const b = e.target.closest("[data-ncat]"); if (!b) return; const c = b.dataset.ncat;
+  nCats.has(c) ? nCats.delete(c) : nCats.add(c); nLimit = 100; nSave(); renderNews(); };
+$("nmore").onclick = () => { nLimit += 100; renderNews(); };
+$("nonly").onclick = e => { if (e.target.closest("#nonlyx")) { NS.k = ""; renderNews(); } };
+document.addEventListener("click", e => {            // 📰 in the Watchlist: today's news of that stock
+  const b = e.target.closest("[data-nk]"); if (!b) return;
+  e.stopPropagation(); e.preventDefault();
+  NS.k = b.dataset.nk; NS.q = ""; $("nq").value = ""; NS.days = Math.max(1, NS.days); nCats.clear(); nLimit = 100;
+  showView("news"); window.scrollTo(0, 0);
+}, true);
+
 function showView(v){
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
-  $("v-scan").hidden = v!=="scan"; $("v-pf").hidden = v!=="pf"; $("v-wl").hidden = v!=="wl";
+  $("v-scan").hidden = v!=="scan"; $("v-pf").hidden = v!=="pf"; $("v-wl").hidden = v!=="wl"; $("v-news").hidden = v!=="news";
   store.set("view", v);
   if (v==="wl") renderWl();
+  if (v==="news") newsShow();
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
 wlInit();
 render();
-showView(["pf","wl"].includes(store.get("view")) ? store.get("view") : "scan");
+showView(["pf","wl","news"].includes(store.get("view")) ? store.get("view") : "scan");
 $("fsclose").onclick = closeFull;
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("fs").hidden) closeFull(); });
+newsIndex();
 loadPortfolio().then(() => { if (location.hash.startsWith("#c=")) openFull(decodeURIComponent(location.hash.slice(3))); });
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(()=>{});
