@@ -65,40 +65,35 @@ The bhavcopy has no index values, so "Nifty 50" is the equal-weight average 3-mo
 `LIVE_FEED.update({"N_RELIANCE": {ltp, prev}})` (keys = `N_<NSE symbol>` / `B_<BSE code>`);
 `LIVE_FEED.symbols()` lists the stocks on screen to subscribe to. Score and rank stay end-of-day.
 
-## News tab
+## Aaj and Telegram tabs
 
-Built by `news.py` (workflow **Update news**: market days every 30 minutes 9:00 AM–4:00 PM IST, plus 8:30 PM IST)
-into `data/news/` — one JSON file per day, 30 days kept. The page reads it from raw.githubusercontent.com, so news
-updates do not need a new Pages deploy. Only public exchange data and headlines are stored; filtering by your
-Watchlist happens in the browser.
+Tabs, in order: **Aaj** (opens first), **Telegram**, **Scanner**, **Watchlist**, **Portfolio**.
 
-| Category | Source |
-|---|---|
-| Results, Order/Contract, Dividend/Bonus/Split, Fund Raise, Promoter/Insider | NSE corporate announcements (mainboard + SME, link = original PDF); BSE announcements RSS for BSE-only stocks |
-| Board Meeting, Upcoming Results (next 7 days) | NSE board meetings + event calendar; BSE announcements for BSE-only stocks |
-| Dividend/Bonus/Split ex-dates | NSE corporate actions |
-| Promoter/Insider | NSE SAST Reg 29 and PIT disclosures |
-| Bulk/Block Deal | NSE large-deals snapshot (falls back to `bulk.csv` / `block.csv`); BSE deals are not available (BSE's API blocks scripts) |
-| Media News | Google News RSS: headline, source, time and link only. ~45 searches per run: stocks with filings today first, then a rotation over Nifty 500 + F&O + IPO + the 150 best-scored stocks |
+Everything private on these two tabs comes **only from your Google Sheet** (through `apps_script/Code.gs`, with the
+same Web app URL and secret key as the Watchlist connection). Nothing from them is stored in this public repo.
 
-Categories are matched from the filing's subject and text (`categorize()` in `news.py`). Every source is optional:
-if one fails it is skipped (shown as ✗ under the News tab) and the rest still update. On NSE holidays the run does
-nothing. In the Watchlist tab a 📰 icon marks stocks with news today; tap it to see that stock's news.
+- **Aaj**: the newest Trading Brief from the Sheet's **Briefs** tab (A Date, B Type, C Verdict, D Brief markdown;
+  newest in row 2): verdict as a big line, then the markdown (tables, emojis). Dropdown for the last 7 briefs.
+  "System status" line: last update of prices, brief and Telegram.
+- **Telegram**: the Sheet's **Telegram** tab (filled by the Telegram bot, see `docs/telegram-bot-api.md`), last 7 days.
+  Highlighted posts first, the rest under "Baaki posts". Chips: Broker report, Sector report, Result, Meri holdings.
+  Each stock shows its Momentum Score; upside % = target / latest close (only when the post has one stock).
+  Tap a card for the Telegram post, "File" for the Drive file. Rows older than 30 days are deleted nightly.
 
-**Daily email "Aaj ki khaas khabar"** — `news.py` writes `data/news/khaas.json`: results, orders/contracts and
-bulk/block buying for stocks with Momentum Score 60+, plus promoter buying and orders of ₹500 Cr+ for any stock.
-The Apps Script (`setupEmail()` once) mails it every market evening, together with today's news for your Watchlist 1–5.
+## Nightly email
 
-### Google Sheet setup (one time)
+`nse_scanner.py` writes `data/email.json` (public market data only): top 10 of each fixed list, New in Top 20, Darvas
+breakouts, volume spikes, list changes. The Apps Script mails it at about 9 PM IST on market days. No news, no Telegram.
+
+## Google Sheet setup (one time)
 
 1. Create a Google Sheet (any name) → **Extensions → Apps Script**.
 2. Delete what is there, paste all of `apps_script/Code.gs`, click **Save**.
 3. Choose `setup` in the function list → **Run** → allow the permissions. The secret key appears in the new **Setup** tab of the sheet.
 4. **Deploy → New deployment** → type **Web app** → Execute as **Me**, Who has access **Anyone** → **Deploy** → copy the Web app URL.
 5. Website → Watchlist → **Google Sheet connection** → paste the URL and key → **Connect karo**.
+6. Choose `setupEmail` → **Run** → allow the permissions (send email, Drive, external service, triggers). A test email
+   arrives at once. It also turns on the nightly Telegram cleanup. `stopEmail` turns the email off.
 
 Updating an existing deployment: paste the new code → Save → **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**
 (the URL stays the same). Older sheets are upgraded automatically.
-
-Daily email: in Apps Script choose `setupEmail` → **Run** → allow the permissions (send email, connect to an external
-service, triggers). A test email arrives at once. `stopEmail` turns it off.

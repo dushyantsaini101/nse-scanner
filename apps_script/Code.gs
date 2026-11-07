@@ -1,29 +1,50 @@
 /**
- * Watchlist backend for the Stock Scanner page (GitHub Pages)  — version 3
- * Stores, in this Google Sheet only (never in the public GitHub repo):
- *   - "Watchlist" tab: one row per stock — Watchlist 1-5 membership, notes, tags, Old-list removals
- *   - "Rank history" tab: daily rank of each stock inside Watchlist 1-5
+ * Backend for the Stock Scanner app (GitHub Pages)  — version 4
+ * Everything private lives only in this Google Sheet / your Google Drive (never in the public GitHub repo):
+ *   - "Watchlist" tab     : one row per stock — Watchlist 1-5 membership, notes, tags, Old-list removals
+ *   - "Rank history" tab  : daily rank of each stock inside Watchlist 1-5
+ *   - "Briefs" tab        : Trading Briefs (A Date, B Type, C Verdict, D Brief markdown; newest in row 2) — read only
+ *   - "Telegram" tab      : posts saved by the Telegram bot (action "telegram_add"); files go to the Drive folder
+ *                           "Telegram Reports (bot)". Rows and files older than 30 days are deleted every night.
+ *   - holdings            : read only from the sheet "My Holdings (auto-updated)" (never written to)
  *
  * Setup (details in README.md):
  *   1. Google Sheet → Extensions → Apps Script → is file ka poora code paste karo → Save.
- *   2. Function list mein "setup" chuno → Run → permission do. Secret key "Setup" tab mein dikhegi.
+ *   2. Pehli baar: function list mein "setup" chuno → Run → permission do. Secret key "Setup" tab mein dikhegi.
  *   3. Deploy → New deployment → Web app → Execute as: Me, Who has access: Anyone → Deploy.
- *      (Pehle se deployed ho to: Deploy → Manage deployments → ✏️ → Version: New version → Deploy.)
+ *      (Pehle se deployed ho to: Deploy → Manage deployments → ✏️ → Version: New version → Deploy. URL wahi rehta hai.)
  *   4. Web app URL + secret key website ke Watchlist tab → "Google Sheet connection" mein daalo.
- * Sheets made by version 1 or 2 are upgraded automatically ("Meri list" becomes Watchlist 1).
+ *   5. "stopEmail" chalao, phir "setupEmail" chalao (raat ~9 baje ka email + Telegram ki roz safai).
  *
- * Daily email "Aaj ki khaas khabar" (optional): function list mein "setupEmail" chuno → Run → permission do.
- * Ek test email turant aayegi; phir har market wale din shaam ko. Band karna ho to "stopEmail" chalao.
+ * API (all calls need the secret key; details for the bot in docs/telegram-bot-api.md):
+ *   GET  ?key=…                      Watchlist items          GET ?key=…&hist=N_TCS   rank history of one stock
+ *   GET  ?key=…&action=briefs        last 7 Trading Briefs    GET ?key=…&action=telegram   last 7 days of posts
+ *   GET  ?key=…&action=holdings      symbols with quantity > 0
+ *   POST {"key":…, "ops":[…]}        Watchlist changes        POST {"key":…, "action":"telegram_add", "rows":[…]}
  */
 
-const VERSION = 3;
+const VERSION = 4;
 const TAB = 'Watchlist';
 const HIST = 'Rank history';
+const BRIEFS = 'Briefs';
+const TG = 'Telegram';
 const HEAD = ['Key', 'Symbol', 'Exchange', 'Name', 'Added', 'Tags', 'Notes', 'Updated', 'Watchlists', 'Old list removed till'];
 const HIST_HEAD = ['Date', 'List', 'Rank', 'Symbol', 'Key', 'Score'];
+const TG_HEAD = ['Time (IST)', 'Channel', 'Type', 'Stocks', 'Research house', 'Rating', 'Target ₹', 'Headline',
+                 'Text', 'Telegram link', 'Drive file link', 'Highlight (Y/N)', 'Holding (Y/N)'];
+const TG_TYPES = ['Broker report', 'Sector report', 'Result', 'Other'];
+const TG_FOLDER = 'Telegram Reports (bot)';
+const TG_KEEP_DAYS = 30;
+const TG_MAX_ROWS = 50;                       // per telegram_add call
+const TG_MAX_FILE = 15 * 1024 * 1024;         // bytes, after base64 decoding
+const TG_MIME = {pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif'};
+const HOLD_ID = '1lY37n9lk3gMk62iy7pO1wzyvIDHVFekMXNr1L7H5m3U';   // "My Holdings (auto-updated)" — read only
+const HOLD_TAB = 'Holdings';
+const HOLD_FIRST_ROW = 5;
 const HIST_DAYS = 180;
 const KEY_RE = /^[NB]_[A-Za-z0-9_-]{1,40}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TZ = 'Asia/Kolkata';
 
 /** Run once from the editor: creates the tabs and the secret key. */
 function setup() {
@@ -35,12 +56,14 @@ function setup() {
   }
   write_(sheet_(), read_(sheet_()));         // creates / upgrades the Watchlist tab
   histSheet_();
+  tgSheet_();
   const ss = SpreadsheetApp.getActive();
   let info = ss.getSheetByName('Setup');
   if (!info) info = ss.insertSheet('Setup');
   info.getRange('A1:B2').setValues([['Secret key (website mein daalo)', key],
                                     ['Note', 'Ye key kisi ko mat do. Nayi key chahiye to Apps Script mein newKey() chalao.']]);
   info.autoResizeColumns(1, 2);
+  tidyTabs_();
   Logger.log('Setup ho gaya. Aapki SECRET KEY: ' + key);
 }
 
@@ -53,28 +76,52 @@ function newKey() {
 function doGet(e) {
   const p = (e && e.parameter) || {};
   if (!keyOk_(p.key)) return out_({ok: false, error: badKeyMsg_()});
+  const act = String(p.action || '');
+  try {
+    if (act === 'briefs') {
+      const briefs = readBriefs_(Math.min(Math.max(Number(p.n) || 7, 1), 30));
+      return out_({ok: true, version: VERSION, briefs: briefs,
+                   status: {brief: briefs.length ? briefs[0].date : '', telegram: tgLastTime_()}});
+    }
+    if (act === 'telegram') {
+      const days = Math.min(Math.max(Number(p.days) || 7, 1), TG_KEEP_DAYS);
+      return out_({ok: true, version: VERSION, days: days, telegram: readTelegram_(days), updated: tgLastTime_()});
+    }
+    if (act === 'holdings') {
+      const h = readHoldings_();
+      return out_({ok: true, version: VERSION, count: h.length, holdings: h,
+                   at: Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm')});
+    }
+  } catch (err) {
+    return out_({ok: false, error: String(err && err.message || err)});
+  }
+  if (act) return out_({ok: false, error: 'Unknown action: ' + act});
   if (p.hist) return out_({ok: true, version: VERSION, hist: histFor_(String(p.hist))});
   return out_({ok: true, version: VERSION, items: read_(sheet_())});
 }
 
-/** Body (sent as text/plain): {"key": "...", "ops": [...]}
- *  {op:"patch", items:[{k, sym, ex, name, notes?, tags?, lists?, addList?, delList?, oldDel?}]}  create or change a stock
- *  {op:"hist", date, list, rows:[[key, symbol, rank, score], ...]}                              rank history of one list
- *  version 1/2 ops: add, remove, update, and patch with mine/hidden */
+/** Body (sent as text/plain or JSON):
+ *  {"key": "...", "ops": [...]}                     Watchlist changes:
+ *     {op:"patch", items:[{k, sym, ex, name, notes?, tags?, lists?, addList?, delList?, oldDel?}]}
+ *     {op:"hist", date, list, rows:[[key, symbol, rank, score], ...]}
+ *     version 1/2 ops: add, remove, update, and patch with mine/hidden
+ *  {"key": "...", "action": "telegram_add", "rows": [...]}   Telegram bot (docs/telegram-bot-api.md) */
 function doPost(e) {
   let body;
   try {
     body = JSON.parse(e.postData.contents);
   } catch (err) {
-    return out_({ok: false, error: 'Request samajh nahi aayi'});
+    return out_({ok: false, error: 'Request samajh nahi aayi (JSON nahi hai)'});
   }
-  if (!keyOk_(body.key)) return out_({ok: false, error: badKeyMsg_()});
+  if (!body || !keyOk_(body.key)) return out_({ok: false, error: badKeyMsg_()});
   const lock = LockService.getScriptLock();
   lock.waitLock(25000);
   try {
+    if (body.action === 'telegram_add') return out_(telegramAdd_(body.rows));
+    if (body.action) return out_({ok: false, error: 'Unknown action: ' + body.action});
     const sh = sheet_();
     const map = new Map(read_(sh).map(i => [i.k, i]));
-    const now = Utilities.formatDate(new Date(), 'Asia/Kolkata', 'yyyy-MM-dd HH:mm');
+    const now = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm');
     const hist = [];
     (body.ops || []).forEach(op => {
       if (op && op.op === 'hist') hist.push(op);
@@ -84,11 +131,14 @@ function doPost(e) {
     write_(sh, items);
     if (hist.length) writeHist_(hist);
     return out_({ok: true, version: VERSION, items: items});
+  } catch (err) {
+    return out_({ok: false, error: String(err && err.message || err)});
   } finally {
     lock.releaseLock();
   }
 }
 
+// ---------------------------------------------------------------- Watchlist (unchanged rules)
 function blank_(it, now) {
   return {k: it.k, sym: str_(it.sym, 40), ex: str_(it.ex, 5), name: str_(it.name, 120),
           added: now.slice(0, 10), tags: [], notes: '', lists: [], oldDel: '', updated: now};
@@ -192,7 +242,7 @@ function writeHist_(ops) {
   const sh = histSheet_();
   const n = sh.getLastRow() - 1;
   let rows = n > 0 ? sh.getRange(2, 1, n, HIST_HEAD.length).getDisplayValues() : [];
-  const cutoff = Utilities.formatDate(new Date(Date.now() - HIST_DAYS * 864e5), 'Asia/Kolkata', 'yyyy-MM-dd');
+  const cutoff = Utilities.formatDate(new Date(Date.now() - HIST_DAYS * 864e5), TZ, 'yyyy-MM-dd');
   const drop = new Set(ops.map(o => o.date + '|' + o.list));
   rows = rows.filter(r => r[0] >= cutoff && !drop.has(r[0] + '|' + r[1]));
   ops.forEach(o => {
@@ -221,84 +271,296 @@ function histFor_(k) {
     .sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
 }
 
-// ---------------------------------------------------------------- daily email: "Aaj ki khaas khabar"
-// The GitHub workflow writes data/news/khaas.json (public filings / deals only). This script reads it, adds
-// today's news of the stocks in your Watchlist 1-5 (from this Sheet), and mails it to you once every market evening.
-const NEWS_URL = 'https://raw.githubusercontent.com/dushyantsaini101/nse-scanner/main/data/news/';
-const SITE_URL = 'https://dushyantsaini101.github.io/nse-scanner/';
-const CAT_NAME = {R: 'Results', O: 'Order/Contract', D: 'Dividend/Bonus/Split', B: 'Board Meeting', F: 'Fund Raise',
-                  P: 'Promoter/Insider', K: 'Bulk/Block Deal', M: 'Media News'};
+// ---------------------------------------------------------------- Briefs tab (read only)
+function readBriefs_(n) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(BRIEFS);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const rows = sh.getRange(2, 1, Math.min(sh.getLastRow() - 1, n + 20), 4).getDisplayValues();
+  return rows.filter(r => String(r[2]).trim() || String(r[3]).trim()).slice(0, n)
+    .map(r => ({date: String(r[0]).trim(), type: String(r[1]).trim(), verdict: String(r[2]).trim(), md: String(r[3])}));
+}
 
-/** Run once from the editor: turns the daily email on and sends a test email right away. */
+// ---------------------------------------------------------------- Telegram tab
+function tgSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(TG);
+  if (!sh) sh = ss.insertSheet(TG);
+  if (sh.getLastRow() === 0) {
+    sh.getRange(1, 1, 1, TG_HEAD.length).setValues([TG_HEAD]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function tgRows_() {
+  const sh = tgSheet_();
+  const n = sh.getLastRow() - 1;
+  return n > 0 ? sh.getRange(2, 1, n, TG_HEAD.length).getDisplayValues() : [];
+}
+
+function readTelegram_(days) {
+  const cutoff = Utilities.formatDate(new Date(Date.now() - (days - 1) * 864e5), TZ, 'yyyy-MM-dd');
+  return tgRows_().filter(r => r[9] && r[0] >= cutoff)
+    .map(r => ({time: r[0], channel: r[1], type: r[2], stocks: r[3], house: r[4], rating: r[5], target: r[6],
+                headline: r[7], text: r[8], link: r[9], file: r[10], highlight: yes_(r[11]), holding: yes_(r[12])}))
+    .sort((a, b) => a.time < b.time ? 1 : a.time > b.time ? -1 : 0);
+}
+
+function tgLastTime_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(TG);
+  if (!sh || sh.getLastRow() < 2) return '';
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 1).getDisplayValues().map(r => r[0]).reduce((a, b) => b > a ? b : a, '');
+}
+
+function telegramAdd_(rows) {
+  if (!Array.isArray(rows)) return {ok: false, error: '"rows" list chahiye'};
+  if (rows.length > TG_MAX_ROWS) return {ok: false, error: 'Ek baar mein zyada se zyada ' + TG_MAX_ROWS + ' rows bhejo'};
+  const sh = tgSheet_();
+  const seen = new Set(tgRows_().map(r => linkKey_(r[9])).filter(String));
+  const results = [], add = [];
+  let folder = null;
+  rows.forEach((r, i) => {
+    const res = {i: i, link: '', status: 'error'};
+    results.push(res);
+    try {
+      if (!r || typeof r !== 'object') throw new Error('row object nahi hai');
+      const link = str_(r.link, 500);
+      if (!/^https:\/\//i.test(link)) throw new Error('"link" (https://t.me/…) zaroori hai');
+      res.link = link;
+      const lk = linkKey_(link);
+      if (seen.has(lk)) { res.status = 'duplicate'; return; }
+      let fileLink = /^https:\/\//i.test(str_(r.file_link, 500)) ? str_(r.file_link, 500) : '';
+      if (r.file && r.file.data) {
+        folder = folder || tgFolder_();
+        const f = saveFile_(folder, r.file);
+        fileLink = f.getUrl();
+        res.file = fileLink;
+      }
+      const target = num_(r.target);
+      add.push([tgTime_(r.time), str_(r.channel, 100), tgType_(r.type),
+                (Array.isArray(r.stocks) ? r.stocks.join(', ') : str_(r.stocks, 300)).slice(0, 300),
+                str_(r.house, 100), str_(r.rating, 50), target == null ? '' : String(target),
+                str_(r.headline, 300), str_(r.text, 1500), link, fileLink,
+                yes_(r.highlight) ? 'Y' : 'N', yes_(r.holding) ? 'Y' : 'N'].map(safe_));
+      seen.add(lk);
+      res.status = 'added';
+    } catch (err) {
+      res.error = String(err && err.message || err);
+    }
+  });
+  if (add.length) {
+    const start = sh.getLastRow() + 1;
+    const rng = sh.getRange(start, 1, add.length, TG_HEAD.length);
+    rng.setNumberFormat('@');
+    rng.setValues(add);
+  }
+  const count = s => results.filter(x => x.status === s).length;
+  return {ok: true, version: VERSION, added: count('added'), duplicates: count('duplicate'), errors: count('error'), results: results};
+}
+
+function saveFile_(folder, f) {
+  let name = str_(f.name, 150).replace(/[\\/:*?"<>|\r\n]+/g, '_') || 'file';
+  const ext = (name.match(/\.([A-Za-z0-9]+)$/) || [, ''])[1].toLowerCase();
+  let mime = str_(f.mime, 100).toLowerCase();
+  if (!mime) mime = TG_MIME[ext] || '';
+  const okMime = Object.keys(TG_MIME).map(k => TG_MIME[k]);
+  if (okMime.indexOf(mime) < 0) throw new Error('file sirf PDF ya image (jpg, png, webp, gif) ho sakti hai');
+  if (!ext) name += '.' + Object.keys(TG_MIME).filter(k => TG_MIME[k] === mime)[0];
+  const data = String(f.data).replace(/^data:[^,]*,/, '').replace(/\s+/g, '');
+  if (data.length > TG_MAX_FILE * 1.37 + 16) throw new Error('file 15 MB se badi hai');
+  const bytes = Utilities.base64Decode(data);
+  if (!bytes.length) throw new Error('file khali hai');
+  if (bytes.length > TG_MAX_FILE) throw new Error('file 15 MB se badi hai');
+  return folder.createFile(Utilities.newBlob(bytes, mime, name));   // private: only you can open it
+}
+
+function tgFolder_() {
+  const it = DriveApp.getFoldersByName(TG_FOLDER);
+  return it.hasNext() ? it.next() : DriveApp.createFolder(TG_FOLDER);
+}
+
+/** Runs every night (setupEmail turns it on): removes Telegram rows and Drive files older than 30 days. */
+function cleanupTelegram() {
+  const cutoff = Utilities.formatDate(new Date(Date.now() - TG_KEEP_DAYS * 864e5), TZ, 'yyyy-MM-dd');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(25000);
+  let removed = 0;
+  try {
+    const sh = tgSheet_();
+    const rows = tgRows_();
+    const keep = rows.filter(r => !(r[0] && r[0].slice(0, 10) < cutoff));
+    removed = rows.length - keep.length;
+    if (removed) {
+      sh.getRange(2, 1, rows.length, TG_HEAD.length).clearContent();
+      if (keep.length) {
+        const rng = sh.getRange(2, 1, keep.length, TG_HEAD.length);
+        rng.setNumberFormat('@');
+        rng.setValues(keep);
+      }
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  let files = 0;
+  const folders = DriveApp.getFoldersByName(TG_FOLDER);
+  const old = new Date(Date.now() - TG_KEEP_DAYS * 864e5);
+  while (folders.hasNext()) {
+    const fs = folders.next().getFiles();
+    while (fs.hasNext()) {
+      const f = fs.next();
+      if (f.getDateCreated() < old) { f.setTrashed(true); files++; }
+    }
+  }
+  Logger.log('Telegram safai: ' + removed + ' rows aur ' + files + ' files hatayi (' + TG_KEEP_DAYS + ' din se purani).');
+}
+
+function tgTime_(v) {
+  if (v == null || v === '') return Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm');
+  const s = String(v).trim();
+  let m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(:\d{2})?$/);
+  if (m) return m[1] + ' ' + m[2];                                         // already IST
+  let d = /^\d{10,13}$/.test(s) ? new Date(Number(s) * (s.length === 10 ? 1000 : 1)) : new Date(s);
+  if (isNaN(d.getTime())) d = new Date();
+  return Utilities.formatDate(d, TZ, 'yyyy-MM-dd HH:mm');
+}
+function tgType_(v) {
+  const s = String(v || '').trim().toLowerCase();
+  return TG_TYPES.filter(t => t.toLowerCase() === s)[0] || (/broker/.test(s) ? 'Broker report' : /sector/.test(s) ? 'Sector report' : /result/.test(s) ? 'Result' : 'Other');
+}
+function linkKey_(u) {
+  return String(u || '').trim().toLowerCase().replace(/[?#].*$/, '').replace(/\/+$/, '').replace(/^https?:\/\/(www\.)?/, '');
+}
+function yes_(v) { return v === true || /^(y|yes|true|1)$/i.test(String(v == null ? '' : v).trim()); }
+function num_(v) {
+  if (v == null || v === '') return null;
+  const n = Number(String(v).replace(/[₹,\s]/g, '').replace(/^rs\.?/i, ''));
+  return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
+// ---------------------------------------------------------------- holdings (read only)
+function readHoldings_() {
+  const sh = SpreadsheetApp.openById(HOLD_ID).getSheetByName(HOLD_TAB);
+  if (!sh) throw new Error('"' + HOLD_TAB + '" tab nahi mila holdings sheet mein');
+  const last = sh.getLastRow();
+  if (last < HOLD_FIRST_ROW) return [];
+  const out = new Map();
+  sh.getRange(HOLD_FIRST_ROW, 1, last - HOLD_FIRST_ROW + 1, 4).getValues().forEach(r => {
+    const sym = String(r[0] == null ? '' : r[0]).trim().toUpperCase();
+    const qty = typeof r[3] === 'number' ? r[3] : Number(String(r[3]).replace(/[,\s]/g, ''));
+    if (sym && isFinite(qty) && qty > 0) out.set(sym, (out.get(sym) || 0) + qty);
+  });
+  return Array.from(out, ([symbol, qty]) => ({symbol: symbol, qty: qty}));
+}
+
+// ---------------------------------------------------------------- tidy tabs
+/** Deletes the empty default "Sheet1" tab. Never touches Watchlist, Rank history, Setup or Briefs. */
+function tidyTabs_() {
+  const ss = SpreadsheetApp.getActive();
+  const s1 = ss.getSheetByName('Sheet1');
+  if (s1 && ss.getSheets().length > 1 && s1.getLastRow() === 0 && s1.getLastColumn() === 0) ss.deleteSheet(s1);
+}
+
+// ---------------------------------------------------------------- nightly email: Watchlist summary
+// The GitHub workflow writes data/email.json (public market data only: top 10 of each fixed list, new in top 20,
+// Darvas breakouts, volume spikes, list changes). This script mails it at ~9 PM IST on market days.
+const EMAIL_URL = 'https://raw.githubusercontent.com/dushyantsaini101/nse-scanner/main/data/email.json';
+const SITE_URL = 'https://dushyantsaini101.github.io/nse-scanner/';
+const EMAIL_HOUR = 21;
+
+/** Run once from the editor: turns on the nightly email + the nightly Telegram cleanup, sends a test email. */
 function setupEmail() {
   stopEmail();
-  ScriptApp.newTrigger('dailyNewsEmail').timeBased().everyHours(1).create();
-  Logger.log('Daily email ON: ' + Session.getEffectiveUser().getEmail() +
-             ' pe har market wale din shaam ~9-11 baje aayega. Abhi ek test email bhej raha hoon.');
-  dailyNewsEmail(true);
-}
-
-/** Run to turn the daily email off. */
-function stopEmail() {
-  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'dailyNewsEmail')
+  tgSheet_();
+  tidyTabs_();
+  tgFolder_();                                          // asks for the Drive permission now
+  try { readHoldings_(); } catch (err) { Logger.log('Holdings sheet: ' + err.message); }
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'cleanupTelegram')
     .forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('dailyEmail').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger('cleanupTelegram').timeBased().atHour(3).everyDays(1).inTimezone(TZ).create();
+  Logger.log('Email ON: ' + Session.getEffectiveUser().getEmail() + ' pe har market wale din raat ~9 baje. ' +
+             'Telegram ki safai roz raat 3 baje. Abhi ek test email bhej raha hoon.');
+  dailyEmail(true);
 }
 
-/** Runs every hour; sends once a day, after the evening news update (or at 11 PM with what is there). */
-function dailyNewsEmail(test) {
+/** Run to turn the nightly email off (also removes the old "Aaj ki khaas khabar" email). */
+function stopEmail() {
+  ScriptApp.getProjectTriggers().filter(t => ['dailyNewsEmail', 'dailyEmail'].indexOf(t.getHandlerFunction()) >= 0)
+    .forEach(t => ScriptApp.deleteTrigger(t));
+  Logger.log('Email band.');
+}
+
+/** Old trigger name (version 3): now sends the new email. */
+function dailyNewsEmail() { dailyEmail(); }
+
+/** Runs every hour; sends once a day from 9 PM IST, when today's market data is there (no data = no market = no email). */
+function dailyEmail(test) {
   test = test === true;
   const props = PropertiesService.getScriptProperties();
   const now = new Date();
-  const today = Utilities.formatDate(now, 'Asia/Kolkata', 'yyyy-MM-dd');
-  const hour = Number(Utilities.formatDate(now, 'Asia/Kolkata', 'H'));
-  if (!test && (props.getProperty('MAIL_SENT') === today || hour < 19)) return;
-  const kh = fetchJson_(NEWS_URL + 'khaas.json');
+  const today = Utilities.formatDate(now, TZ, 'yyyy-MM-dd');
+  const hour = Number(Utilities.formatDate(now, TZ, 'H'));
+  if (!test && (props.getProperty('MAIL_SENT') === today || hour < EMAIL_HOUR)) return;
+  const d = fetchJson_(EMAIL_URL);
   const to = Session.getEffectiveUser().getEmail();
-  if (!kh || kh.date !== today) {
-    if (test) MailApp.sendEmail({to: to, name: 'Stock Scanner', subject: 'Test: Stock Scanner daily email chal raha hai',
-      htmlBody: '<p>Email setup ho gaya. Aaj ki khabar abhi bani nahi (market band ya update baaki). ' +
-                'Market wale din shaam ko "Aaj ki khaas khabar" aayegi.</p><p><a href="' + SITE_URL + '">Website kholo</a></p>'});
+  if (!d || (!test && d.date !== today)) {
+    if (test) MailApp.sendEmail({to: to, name: 'Stock Scanner', subject: 'Test: Stock Scanner email chal raha hai',
+      htmlBody: '<p>Email setup ho gaya, par abhi data file nahi mili. Market wale din raat ~9 baje Watchlist summary aayegi.</p>' +
+                '<p><a href="' + SITE_URL + '">App kholo</a></p>'});
     return;
   }
-  if (!test && !kh.final && hour < 23) return;          // wait for the evening update
-  let mine = [];
-  try {
-    const keys = new Set(read_(sheet_()).filter(i => i.lists.length).map(i => i.k));
-    if (keys.size) {
-      const day = fetchJson_(NEWS_URL + today + '.json');
-      mine = ((day && day.items) || []).filter(it => keys.has(it[2])).slice(0, 60);
-    }
-  } catch (err) { /* watchlist part is optional */ }
-  const items = kh.items || [];
-  const dt = Utilities.formatDate(now, 'Asia/Kolkata', 'd MMM yyyy');
-  const pct = v => v == null ? '' : ' <span style="color:' + (v >= 0 ? '#0a8a4a' : '#c62828') + '">' + (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%</span>';
-  const link = (url, text) => /^https?:\/\//.test(url || '') ? '<a href="' + esc_(url) + '">' + text + '</a>' : text;
-  let html = '<div style="font-family:Arial,sans-serif;font-size:14px;max-width:640px">';
-  html += '<h2 style="margin:0 0 4px">Aaj ki khaas khabar · ' + dt + '</h2>' +
-          '<div style="color:#666;font-size:12px;margin-bottom:12px">Results, bade orders, promoter buying aur bulk/block buying — ' +
-          'Momentum Score 60+ wale stocks (promoter buying aur ₹500 Cr+ orders sab stocks ke). Score kal ke close se.</div>';
-  if (!items.length) html += '<p>Aaj koi khaas khabar nahi mili.</p>';
-  let last = '';
-  items.forEach(x => {
-    if (x.why !== last) { html += '<h3 style="margin:14px 0 4px;font-size:15px">' + esc_(x.why) + '</h3>'; last = x.why; }
-    html += '<div style="padding:6px 0;border-bottom:1px solid #eee"><b>' + esc_(x.sym) + '</b> <span style="color:#666">score ' + x.score + '</span>' +
-            pct(x.chg) + '<br>' + link(x.url, esc_(x.title)) + ' <span style="color:#999;font-size:12px">' + esc_(x.src) + ' · ' + esc_(String(x.t).slice(11, 16)) + '</span></div>';
-  });
-  if (mine.length) {
-    html += '<h3 style="margin:18px 0 4px;font-size:15px">Aapki Watchlist ki aaj ki khabar (' + mine.length + ')</h3>';
-    mine.forEach(it => {
-      html += '<div style="padding:6px 0;border-bottom:1px solid #eee"><b>' + esc_(it[3]) + '</b> <span style="color:#666">' +
-              esc_(String(it[4]).split('').map(c => CAT_NAME[c] || c).join(', ')) + '</span><br>' +
-              link(it[6], esc_(it[5])) + ' <span style="color:#999;font-size:12px">' + esc_(it[7]) + ' · ' + esc_(String(it[1]).slice(11, 16)) + '</span></div>';
-    });
-  }
-  html += '<p style="margin-top:16px"><a href="' + SITE_URL + '">Website ka News tab kholo</a> · Not investment advice.</p>' +
-          '<p style="color:#999;font-size:11px">Band karna ho to Apps Script mein stopEmail() chalao.</p></div>';
+  const html = emailHtml_(d, test && d.date !== today);
   MailApp.sendEmail({to: to, name: 'Stock Scanner', htmlBody: html,
-                     subject: (test ? 'Test: ' : '') + 'Aaj ki khaas khabar · ' + dt + ' (' + items.length + ')'});
+                     subject: (test ? 'Test: ' : '') + 'Watchlist summary · ' + d.asOf});
   if (!test) props.setProperty('MAIL_SENT', today);
 }
 
+function emailHtml_(d, oldData) {
+  const td = 'padding:4px 6px;border-bottom:1px solid #eee;';
+  const pct = v => v == null ? '' : '<span style="color:' + (v >= 0 ? '#0a8a4a' : '#c62828') + '">' + (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%</span>';
+  const rs = v => '₹' + Number(v).toLocaleString('en-IN', {maximumFractionDigits: 2});
+  const chg = (r, p) => !p ? '<span style="color:#a15c00">naya</span>' : p > r ? '<span style="color:#0a8a4a">▲' + (p - r) + '</span>'
+                       : p < r ? '<span style="color:#c62828">▼' + (r - p) + '</span>' : '=';
+  const chip = x => '<span style="display:inline-block;margin:2px 6px 2px 0;padding:3px 8px;border:1px solid #ddd;border-radius:12px">' +
+                    '<b>' + esc_(x.s) + '</b> <span style="color:#666">' + x.ms + '</span> ' + pct(x.d1) +
+                    (x.vx != null && x.vx >= 2 ? ' <span style="color:#666">' + Number(x.vx).toFixed(1) + '×</span>' : '') +
+                    (x.list ? ' <span style="color:#666">' + esc_(x.list) + ' #' + x.r + '</span>' : '') + '</span>';
+  const h3 = t => '<h3 style="margin:18px 0 6px;font-size:15px">' + t + '</h3>';
+  let html = '<div style="font-family:Arial,sans-serif;font-size:14px;max-width:680px">';
+  html += '<h2 style="margin:0 0 4px">Watchlist summary · ' + esc_(d.asOf) + '</h2>' +
+          '<div style="color:#666;font-size:12px">' + (oldData ? '<b>Test: aaj ka data abhi nahi bana, ye pichhla data hai.</b> ' : '') +
+          'Momentum Score aur rank ' + esc_(d.asOf) + ' ke closing price se. Rank change = kal ke rank se.</div>';
+  (d.lists || []).forEach(l => {
+    html += h3(esc_(l.name) + ' · top 10 <span style="color:#666;font-weight:400;font-size:12px">(' + l.count + ' stocks)</span>');
+    if (!l.top.length) { html += '<div style="color:#666">Koi stock nahi.</div>'; return; }
+    html += '<table style="border-collapse:collapse;width:100%;font-size:13px"><tr style="color:#666;text-align:left">' +
+            '<th style="' + td + '">#</th><th style="' + td + '">Stock</th><th style="' + td + '">Score</th><th style="' + td + '">Close</th>' +
+            '<th style="' + td + '">1D</th><th style="' + td + '">Rank</th></tr>';
+    l.top.forEach(x => {
+      html += '<tr><td style="' + td + '">' + x.r + '</td><td style="' + td + '"><b>' + esc_(x.s) + '</b><br><span style="color:#888;font-size:11px">' +
+              esc_(x.n) + '</span></td><td style="' + td + '"><b>' + x.ms + '</b></td><td style="' + td + '">' + rs(x.c) + '</td><td style="' + td + '">' +
+              pct(x.d1) + '</td><td style="' + td + '">' + chg(x.r, x.pr) + '</td></tr>';
+    });
+    html += '</table>';
+  });
+  html += h3('New in Top 20 (' + (d.new20 || []).length + ')');
+  html += (d.new20 || []).length ? d.new20.map(chip).join('') : '<div style="color:#666">Aaj koi naya stock top 20 mein nahi aaya.</div>';
+  html += h3('Darvas breakout (' + (d.breakoutCount || 0) + ')');
+  html += (d.breakout || []).length ? d.breakout.map(chip).join('') + (d.breakoutCount > d.breakout.length ? '<div style="color:#666;font-size:12px">Score ke hisaab se top ' + d.breakout.length + '.</div>' : '')
+        : '<div style="color:#666">Aaj fixed lists mein koi breakout nahi.</div>';
+  html += h3('Volume spike ≥2× (' + (d.volumeCount || 0) + ')');
+  html += (d.volume || []).length ? d.volume.map(chip).join('') + (d.volumeCount > d.volume.length ? '<div style="color:#666;font-size:12px">Score ke hisaab se top ' + d.volume.length + '.</div>' : '')
+        : '<div style="color:#666">Aaj fixed lists mein koi volume spike nahi.</div>';
+  html += h3('List changes (' + (d.changes || []).length + ')');
+  html += (d.changes || []).length ? '<div>' + d.changes.map(c => '<div style="padding:3px 0">' + (c.change === 'added' ? '<span style="color:#0a8a4a">+ </span>' : '<span style="color:#c62828">− </span>') +
+          '<b>' + esc_(c.s) + '</b> ' + (c.change === 'added' ? 'judha' : 'hata') + ': ' + esc_(c.list) + (c.why ? ' <span style="color:#666">(' + esc_(c.why) + ')</span>' : '') + '</div>').join('') + '</div>'
+        : '<div style="color:#666">Aaj kisi list mein badlav nahi.</div>';
+  html += '<p style="margin-top:18px"><a href="' + SITE_URL + '">App kholo</a> · Not investment advice.</p>' +
+          '<p style="color:#999;font-size:11px">Band karna ho to Apps Script mein stopEmail() chalao.</p></div>';
+  return html;
+}
+
+// ---------------------------------------------------------------- helpers
 function fetchJson_(url) {
   try {
     const r = UrlFetchApp.fetch(url + '?v=' + Date.now(), {muteHttpExceptions: true});
@@ -310,7 +572,6 @@ function fetchJson_(url) {
 function esc_(t) {
   return String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
 }
-
 function keyOk_(k) {
   const key = PropertiesService.getScriptProperties().getProperty('KEY');
   return !!key && String(k || '') === key;

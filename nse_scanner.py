@@ -640,6 +640,7 @@ def main():
     write_app_files(os.path.dirname(OUT))
     write_charts(os.path.dirname(OUT), charts)
     write_csv(stocks, index_members, meta)
+    write_email_summary(stocks, lists, changes, mom_prev, meta)
     with open(os.path.join(DATA_DIR, "adjustments.csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["Date", "Symbol", "Exchange", "BSE_Code", "Price_factor"])
@@ -994,12 +995,49 @@ def write_csv(stocks, index_members, meta):
         json.dump(meta, f, indent=1)
 
 
+def write_email_summary(stocks, lists, changes, mom_prev, meta):
+    """data/email.json: the nightly Watchlist email (apps_script/Code.gs reads it). Public market facts only:
+    top 10 of every fixed list, new in top 20, Darvas breakouts, volume spikes and today's list changes."""
+    by = {s["k"]: s for s in stocks}
+
+    def row(s, rank=None, prev=None):
+        return {"k": s["k"], "s": s["s"], "n": s["n"], "ms": s["ms"], "c": s["c"], "d1": s["ch"].get("1D"),
+                "vx": (s.get("mi") or [None])[0], "r": rank, "pr": prev}
+
+    out = {"date": meta["asOfISO"], "asOf": meta["asOf"], "generated": meta["generated"],
+           "lists": [], "new20": [], "breakout": [], "volume": [], "changes": []}
+    union = set()
+    for lid, label in FIXED:
+        keys = [k for k in lists.get(lid, []) if k in by]
+        union.update(keys)
+        today = sorted(keys, key=lambda k: (-(by[k]["ms"] or 0), by[k]["s"]))
+        prev = sorted((k for k in keys if mom_prev.get(k) is not None), key=lambda k: (-mom_prev[k], by[k]["s"]))
+        pr = {k: i + 1 for i, k in enumerate(prev)}
+        out["lists"].append({"id": lid, "name": label, "count": len(keys),
+                             "top": [row(by[k], i + 1, pr.get(k)) for i, k in enumerate(today[:10])]})
+        if pr:
+            for i, k in enumerate(today[:20]):
+                if not pr.get(k) or pr[k] > 20:
+                    out["new20"].append(dict(row(by[k], i + 1, pr.get(k)), list=label))
+    pool = sorted((by[k] for k in union), key=lambda s: (-(s["ms"] or 0), s["s"]))
+    bo = [s for s in pool if s.get("dv") and s["dv"].get("st") == "bo"]
+    vol = [s for s in pool if ((s.get("mi") or [None])[0] or 0) >= 2]
+    out["breakoutCount"], out["volumeCount"] = len(bo), len(vol)
+    out["breakout"] = [row(s) for s in bo[:25]]
+    out["volume"] = [row(s) for s in vol[:25]]
+    names = dict(FIXED)
+    out["changes"] = [{"list": names.get(c[0], c[0]), "change": "added" if c[1] == "+" else "removed",
+                       "s": c[3], "why": c[4]} for c in changes.get("today", [])]
+    with open(os.path.join(DATA_DIR, "email.json"), "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
+
+
 # ---------------------------------------------------------------- app files
 
 ICON_192 = "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAIAAADdvvtQAAAENklEQVR4nO3dS27bSABF0XIj+1BmXo57mt14N5l6Oe6Zs5MeCBCESLJpPrJ+PGeUODJFoC6qyNInT6eX9wJr/dP6BBibgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAhoYKfX361PQUDDOtfTvCEBDem6m7YNCWg8t8U0bEhAg7nbyp/XX/XP5ExAw2tYTxHQWG6nn7b1FAENpMN6ioBG0fx2/REBDaC3C+drAupdz/UUAXWu83qKgHrWfz1FQGPprZ4ioG71edN+S0A9GqWeIqAOdbvlc9fT6eW99TmwMpoepiUBtRdOOV5MPbR8wfKGMgYmICICIiIgIgJqaawtn7sE1MwE9RQBtTJHPUVATUxTTxFQfTPVUwRU2WT1FAERElA9A73LZzkBVTJlPUVAdcx36XMhoN0N8eGK1QS0r7nrKQLa1fT1lFJ+tD6BjV2PWduhOkI9ZbKA/hqzy1/rD9tB6inTBPT5bc75X9uO35T1lDkCWniTXG1CmnXL567hL6JXbLGcXn/vtzFzqHrK0DNQGMEeE9LEG4aPjBrQJ0N1CaLy0nacC+drQy5hS+o5//lb45csbcesp4w4Ay2s5/aH+01Ih62njBXQd9O5+5jlc8zCko5cTxkooLCe2wd/t6Tlz3KcesooAW1Vz91fTJa2o9203+o9oM9Hd5PRWre0/Xn9pZ7SeUB7TDxfHvC7E9LB9RvQl/V8vD2vOOzPf//7/AErLpL++sVD6TGgJcvWunouv/hlRuWbS9sx6ykdBrRk2Vpdz8XH2/OShsqyCemw9ZTedqJ7HqRH+9rNT6ytXmagCndbm7iekPo5q4a6CKjnieeRbk+ssvZL2Ij1cNE4IPWMrtkSJp05tJmB1DONBgGpZyZVl7BR7tVZrl5AJp4p1VvCHlWinqFVXcJu30PTfz07veY/jWa38f2nU6q85j+62ndh527mrmfDI/SvwW38EPWwUPvXwhiagIgIiIiAiAiIiICICIiIgIjs8lLG6h3YI+z9T2b7GSjZv/94ez7C9v9MNg5ok+HX0EBcAxEREBEBEREQEQERERARAREREBEBEREQEQERERARAREREBEBEREQEQERERARAREREBEBEdk4oE0+2PXlQfJnWXKEOs+Sf91W2y/sMgMReTq9vG9+0DqfTK3z/al1nmXdf+Hbw5cF7hIQx2EJIyIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAiAiIiICICIiIgIgIiIiAi/wMGelvdl+PwXwAAAABJRU5ErkJggg=="
 ICON_512 = "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"
 MANIFEST = '{\n  "name": "NSE Stock Scanner",\n  "short_name": "NSE Scanner",\n  "start_url": "./",\n  "scope": "./",\n  "display": "standalone",\n  "background_color": "#f6f7f9",\n  "theme_color": "#1f4fd8",\n  "icons": [\n    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},\n    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},\n    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}\n  ]\n}\n'
-SERVICE_WORKER = '// Network-first: always try to get today\'s data, fall back to the last copy when offline.\nconst CACHE = "nse-scanner-v3";\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", e => {\n  if (e.request.method !== "GET") return;\n  e.respondWith(\n    fetch(e.request, {cache: "no-store"})\n      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })\n      .catch(() => caches.match(e.request))\n  );\n});\n'
+SERVICE_WORKER = '// Network-first: always try to get today\'s data, fall back to the last copy when offline.\nconst CACHE = "nse-scanner-v4";\nself.addEventListener("install", e => self.skipWaiting());\nself.addEventListener("activate", e => e.waitUntil(self.clients.claim()));\nself.addEventListener("fetch", e => {\n  if (e.request.method !== "GET") return;\n  e.respondWith(\n    fetch(e.request, {cache: "no-store"})\n      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })\n      .catch(() => caches.match(e.request))\n  );\n});\n'
 
 
 def write_app_files(folder):
@@ -1167,27 +1205,41 @@ button.sug .add2{color:var(--acc);font-weight:600;white-space:nowrap;min-width:5
 select.persel{font:inherit;font-size:11.5px;padding:1px 2px;margin-top:2px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 #pick button.tg{padding:9px 14px;font-size:14px}
 @media (max-width:700px){td.sym{white-space:normal;min-width:0;width:100%} td.sym small{max-width:none;white-space:normal} .hide-m{display:none} th,td{padding:8px 6px} .pill{min-width:0} .dgrid{grid-template-columns:1fr 1fr} .tag,.chip{display:inline-block;margin-top:2px} .chart{height:260px} .chart.withrsi{height:350px} .stat b{font-size:16px} .stat{min-width:96px}}
-.ni{padding:10px 2px;border-bottom:1px solid var(--line)} .ni:last-child{border-bottom:0}
-.ni .nh{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:13px}
-.ni .nl{display:block;color:var(--ink);text-decoration:none;margin:5px 0 3px;line-height:1.4;font-size:14px}
-.ni a.nl:hover{text-decoration:underline}
-.ni small{color:var(--mute);font-size:11px} .ni small a{color:var(--acc)}
-.ni .nt{margin-left:auto;color:var(--mute);font-size:11px} .nchg{font-weight:600;font-size:12px}
-button.nstk{border:0;background:none;padding:0;font:inherit;font-size:14px;color:var(--acc);cursor:pointer}
-.ncat{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--bg);border:1px solid var(--line);color:var(--mute);white-space:nowrap}
-.ncat.R,.ncat.O,.ncat.P{background:var(--upbg);color:var(--up);border-color:transparent}
-.ncat.K,.ncat.F{background:var(--ambbg);color:var(--amb);border-color:transparent}
-.ncat.D,.ncat.B{background:var(--accbg);color:var(--acc);border-color:transparent}
-.nday{font-weight:700;font-size:12px;margin:14px 0 2px;color:var(--mute);text-transform:uppercase;letter-spacing:.03em} .nday:first-child{margin-top:0}
+.verdict{font-size:21px;font-weight:800;line-height:1.3;margin:0 0 6px;padding:10px 12px;border-radius:10px;overflow-wrap:anywhere}
+.verdict.up{color:var(--up);background:var(--upbg)} .verdict.dn{color:var(--dn);background:var(--dnbg)} .verdict.mid{color:var(--amb);background:var(--ambbg)}
+.md{font-size:15px;line-height:1.55;overflow-wrap:anywhere;margin-top:8px}
+.md h1,.md h2,.md h3,.md h4{margin:16px 0 6px;line-height:1.3} .md h1{font-size:19px} .md h2{font-size:17px} .md h3{font-size:15.5px} .md h4{font-size:14.5px}
+.md>:first-child{margin-top:4px} .md p{margin:8px 0} .md ul,.md ol{margin:6px 0;padding-left:22px} .md li{margin:3px 0} .md li.sub{margin-left:18px}
+.md blockquote{margin:8px 0;padding:4px 12px;border-left:3px solid var(--acc);background:var(--accbg);border-radius:0 8px 8px 0}
+.md code{background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:13px}
+.md pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow-x:auto} .md pre code{border:0;padding:0;background:none}
+.md hr{border:0;border-top:1px solid var(--line);margin:14px 0} .md a{color:var(--acc)}
+.mdt{overflow-x:auto;margin:10px 0;border:1px solid var(--line);border-radius:8px}
+.mdt th,.mdt td{padding:6px 8px;text-align:left;font-size:13px;line-height:1.4;cursor:auto;position:static}
+.mdt td{white-space:normal;min-width:64px} .mdt th{background:var(--bg);color:var(--ink);font-weight:600}
+.mdt tr:last-child td{border-bottom:0}
+.tgi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px;cursor:pointer}
+.tgi.hl{border-color:var(--amb);box-shadow:inset 4px 0 var(--amb)}
+.tgi .th{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;font-size:12px;color:var(--mute)}
+.tgi .th b{color:var(--ink)} .tgi .tt{margin-left:auto;white-space:nowrap}
+.tgi .hd{display:block;font-weight:600;font-size:15px;color:var(--ink);text-decoration:none;margin:7px 0 4px;line-height:1.35;overflow-wrap:anywhere}
+.tgi .tx{font-size:13px;color:var(--mute);line-height:1.45;white-space:pre-line;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+.tgi .stk{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px} .tgi .stk .tg{display:inline-flex;gap:5px;align-items:center}
+.tgi .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+a.btn{text-decoration:none;display:inline-block;color:var(--acc);font-weight:600}
+.tgty{font-size:11px;padding:1px 7px;border-radius:4px;font-weight:600;white-space:nowrap}
+.tgty.b{background:var(--accbg);color:var(--acc)} .tgty.s{background:var(--ambbg);color:var(--amb)} .tgty.r{background:var(--upbg);color:var(--up)} .tgty.o{background:var(--bg);color:var(--mute);border:1px solid var(--line)}
+.rate{font-weight:700} .rate.up{color:var(--up);background:none} .rate.dn{color:var(--dn);background:none}
+details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+.connect{font-size:14px;line-height:1.5} .connect ol{margin:8px 0 0;padding-left:20px}
 @media (max-width:480px){.tabs button{padding:7px 10px;font-size:13px}}
-button.nwb{border:0;background:none;padding:0 2px;font-size:14px;line-height:1;cursor:pointer;vertical-align:middle;margin-left:4px}
 </style></head><body>
 <div id="fs" hidden><div class="fshead"><span id="fsname"></span><span class="cbtns"><a id="fsnew" target="_blank" rel="noopener">Naye tab mein ↗</a><a id="fstv" target="_blank" rel="noopener">TradingView ↗</a><button class="btn sm" id="fsclose">✕ Band karo</button></span></div><div class="indbar" id="fsind"></div><div id="fschart"></div><div class="chartbar"><span id="fsleg"></span></div></div>
 <div id="ticker" hidden><div class="tk" id="tk"></div></div>
 <div id="undo" hidden><span id="undomsg"></span><button class="btn sm" id="undobtn">Undo</button></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
-<nav class="tabs"><button data-v="scan" class="on">Scanner</button><button data-v="wl">Watchlist</button><button data-v="news">News</button><button data-v="pf">Mera Portfolio</button></nav></header>
+<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="wl">Watchlist</button><button data-v="pf">Portfolio</button></nav></header>
 <div class="wrap" id="v-wl" hidden>
   <div class="panel">
     <div class="row" style="justify-content:space-between;align-items:center"><b>Watchlist</b><span class="sub" id="wlsync"></span></div>
@@ -1236,22 +1288,23 @@ button.nwb{border:0;background:none;padding:0 2px;font-size:14px;line-height:1;c
 <div class="row"><input type="search" id="pickq" placeholder="Naam ya symbol… jaise sterlite, tata" autocomplete="off" spellcheck="false"></div>
 <div class="sugs" id="picksug" hidden></div>
 <div class="row"><button class="btn" id="pickx">Ho gaya</button></div></div></div>
-<div class="wrap" id="v-news" hidden>
+<div class="wrap" id="v-aaj">
   <div class="panel">
-    <div class="row" style="justify-content:space-between;align-items:center"><b>News</b><span class="sub" id="nsync"></span></div>
-    <div class="row">
-      <label class="l grow">Kaunse stocks<select id="nfilter"></select></label>
-      <label class="l">Kitne din<select id="ndays"><option value="1">Aaj</option><option value="2">Aaj + kal</option><option value="7">7 din</option><option value="30">30 din</option></select></label>
-    </div>
-    <div class="mlab">Category <small>· kai chun sakte ho · kuch na chuno to sab</small></div>
-    <div class="chips" id="ncats"></div>
-    <div class="row"><input type="search" id="nq" placeholder="Search symbol, naam ya khabar…"></div>
-    <div id="nonly"></div>
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Aaj ka Trading Brief</b>
+      <span class="row" style="gap:6px;align-items:center"><select id="aajsel" aria-label="Kaunsa brief" hidden></select><button class="btn sm" id="aajref" title="Sheet se dobara lao">↻</button></span></div>
+    <div class="sub" id="aajstat" style="margin-top:8px"></div>
   </div>
-  <details class="panel" id="ncal" hidden><summary><b>Upcoming Results</b> <span class="na" id="ncaln"></span></summary><div id="ncallist"></div></details>
-  <div class="panel" id="nlist"></div>
-  <div class="pager"><span id="ninfo"></span><span><button class="btn" id="nmore">Aur dikhao</button></span></div>
-  <div class="foot" id="nfoot"></div>
+  <div id="aajbox"></div>
+</div>
+<div class="wrap" id="v-tg" hidden>
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Telegram</b>
+      <span class="row" style="gap:6px;align-items:center"><span class="sub" id="tgsync"></span><button class="btn sm" id="tgref" title="Sheet se dobara lao">↻</button></span></div>
+    <div class="chips" id="tgchips" style="margin-top:10px"></div>
+    <div class="row"><input type="search" id="tgq" placeholder="Search stock, broker ya headline…"></div>
+  </div>
+  <div id="tglist"></div>
+  <div class="foot" id="tgfoot"></div>
 </div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
@@ -1271,7 +1324,7 @@ button.nwb{border:0;background:none;padding:0 2px;font-size:14px;line-height:1;c
   <div class="tbl" id="pfexitbox" hidden><table><thead><tr id="pfxhead"></tr></thead><tbody id="pfxbody"></tbody></table></div>
   <div class="foot" id="pffoot"></div>
 </div>
-<div class="wrap" id="v-scan">
+<div class="wrap" id="v-scan" hidden>
 <div class="panel">
   <div class="row"><div class="seg" id="periods"></div></div>
   <div class="row">
@@ -2316,7 +2369,7 @@ function renderWl(order){
     if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
     const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
-      <td class="l sym"><b>${esc(s.s)}</b>${newsBtn(k)}${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
+      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
@@ -2615,8 +2668,10 @@ $("wlconnect").onclick = () => {
   store.set(WLK.api, JSON.stringify({url, key}));
   if (WL.size) { wlQueue.unshift({op:"patch", items:[...WL.values()].map(i => patchOne(i.k, {notes:i.notes, tags:i.tags, lists:i.lists, oldDel:i.oldDel}))}); wlSaveQueue(); }  // copy this browser's lists into the Sheet
   wlErr = ""; wlSync();
+  Object.values(SD).forEach(s => { s.at = 0; s.err = ""; });
 };
-$("wldisc").onclick = () => { if (confirm("Sheet se connection hatana hai? Watchlist ki copy is browser mein rahegi.")) { store.set(WLK.api, ""); wlQueue = []; wlSaveQueue(); wlErr = ""; wlRefresh(); } };
+$("wldisc").onclick = () => { if (confirm("Sheet se connection hatana hai? Watchlist ki copy is browser mein rahegi.")) { store.set(WLK.api, ""); wlQueue = []; wlSaveQueue(); wlErr = "";
+  ["briefs", "tg", "hold"].forEach(n => { store.set("sd_" + n, ""); delete SD[n]; }); wlRefresh(); } };
 $("wlexport").onclick = () => {
   const q = v => `"${String(v??"").replace(/"/g,'""')}"`;
   const lines = [["Rank","Symbol","Exchange","Name","Lists","Score","Close","Chg_1D",`Chg_${perLabel().replace(/ /g,"_")}`,"Auto_tags","My_tags","Notes"].join(",")].concat(wlFiltered(wlRanks()).map(k => {
@@ -2639,148 +2694,228 @@ function wlInit(){
   window.addEventListener("online", () => wlSync());
 }
 
-// ---------- News tab. Data: data/news/ in the GitHub repo (public filings / deals / headlines only),
-// refreshed every 30 min on market days by .github/workflows/news.yml. Watchlist filtering happens here in the browser.
-var NX = null, nErr = "", nLimit = 100;
-const NEWS_BASE = store.get("news_base") || "https://raw.githubusercontent.com/dushyantsaini101/nse-scanner/main/data/news/";
-const NCATS = [["R","Results"],["O","Order/Contract"],["D","Dividend/Bonus/Split"],["B","Board Meeting"],["F","Fund Raise"],["P","Promoter/Insider"],["K","Bulk/Block Deal"],["M","Media News"]];
-const NCAT = Object.fromEntries(NCATS);
-const NSRC = {nse_filings:"NSE filings", bse_filings:"BSE filings", nse_board_meetings:"Board meetings", nse_corp_actions:"Corporate actions",
-  nse_insider:"Promoter/insider", nse_deals:"Bulk/block deals", google_news:"Google News"};
-const NDAYS = new Map();
-const NS = Object.assign({f:"all", days:2}, jget("news_f", {}), {q:"", k:""});   // k: only this stock (from 📰)
-const nCats = new Set(jget("news_cats", []));
+// ---------- Aaj + Telegram tabs. Their data comes only from your Google Sheet through the Apps Script
+// (actions "briefs", "telegram", "holdings"), never from this public repo. Same URL + key as the Watchlist connection.
 const istToday = () => new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
 const isoAdd = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * 864e5).toISOString().slice(0, 10);
-const nUrl = f => NEWS_BASE + f + "?v=" + Math.floor(Date.now() / 3e5);
-const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : "";
-function nSave(){ store.set("news_f", JSON.stringify({f:NS.f, days:NS.days})); store.set("news_cats", JSON.stringify([...nCats])); }
-function newsToday(k){ return NX && NX.todayDate === istToday() && NX.today ? NX.today[k] : null; }
-function newsBtn(k){ const n = newsToday(k); return n ? `<button class="nwb" data-nk="${esc(k)}" title="Aaj ki ${n[0]} khabar: ${esc([...n[1]].map(c => NCAT[c] || c).join(", "))}" aria-label="Aaj ki news">📰</button>` : ""; }
+const safeUrl = u => /^https:\/\//i.test(u || "") ? u : "";
+const SD = {};
+const sdCache = n => jget("sd_" + n, null);
+async function sheetGet(action){
+  const a = wlApi();
+  if (!a || !a.url) throw new Error("NOSHEET");
+  const r = await fetch(a.url + (a.url.includes("?") ? "&" : "?") + "key=" + encodeURIComponent(a.key || "") + "&action=" + action);
+  let j; try { j = await r.json(); } catch(e) { throw new Error("Web app ka jawab samajh nahi aaya. Deploy mein 'Who has access: Anyone' chuna hai?"); }
+  if (!j.ok) throw new Error(j.error || "Sheet ne error diya");
+  if ((j.version || 1) < 4) throw new Error("Sheet ka Apps Script purana hai: naya Code.gs paste karke New version deploy karo");
+  return j;
+}
+function sdState(n){ return SD[n] || (SD[n] = {data: sdCache(n), err: "", busy: false, at: 0}); }
+async function sdLoad(n, action, force){
+  const s = sdState(n);
+  if (s.busy || (!force && s.at && Date.now() - s.at < 120e3)) return s;
+  s.busy = true;
+  try { s.data = await sheetGet(action); store.set("sd_" + n, JSON.stringify(s.data)); s.err = ""; s.at = Date.now(); }
+  catch(e) { const m = (e && e.message) || ""; s.err = m === "NOSHEET" ? "NOSHEET" : /fetch|network|load failed/i.test(m) ? "offline" : m; }
+  s.busy = false;
+  return s;
+}
+function sdMsg(s, empty){
+  if (s.err === "NOSHEET") return `<div class="connect"><b>Google Sheet abhi connect nahi hai.</b> Ye data sirf aapki Google Sheet se aata hai.
+    <ol><li><b>Watchlist</b> tab kholo → neeche <b>Google Sheet connection</b> dabao.</li><li>Web app URL aur secret key daalo → <b>Connect karo</b>. (Ek hi baar karna hai.)</li></ol>
+    <div class="row"><button class="btn" data-goconn="1">Google Sheet connection kholo</button></div></div>`;
+  if (!s.data && s.busy) return `<div class="na">Sheet se load ho raha hai…</div>`;
+  if (!s.data && s.err) return `<div class="err">${s.err === "offline" ? "Internet nahi hai, aur is phone mein koi purani copy nahi." : "⚠ " + esc(s.err)}</div>`;
+  return `<div class="na">${empty}</div>`;
+}
+const sdNote = s => s.busy ? "load ho raha hai…" : s.err === "offline" ? "offline · purani copy" : s.err && s.err !== "NOSHEET" ? "⚠ " + esc(s.err) : "";
+document.addEventListener("click", e => {
+  if (!e.target.closest("[data-goconn]")) return;
+  showView("wl"); $("wlsetup").open = true; $("wlsetup").scrollIntoView({block:"center"}); $("wlurl").focus();
+});
+function fmtTime(t){
+  t = String(t || "");
+  const d = t.slice(0, 10), hm = t.slice(11, 16);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return esc(t);
+  const today = istToday();
+  return (d === today ? "Aaj" : d === isoAdd(today, -1) ? "Kal" : fdIso(d).replace(/ \d{4}$/, "")) + (hm ? " " + hm : "");
+}
 
-async function newsIndex(){
-  try { const r = await fetch(nUrl("index.json")); if (!r.ok) throw new Error("HTTP " + r.status); NX = await r.json(); nErr = ""; }
-  catch (e) { nErr = "News load nahi hui (" + e.message + "). Internet check karo, phir page refresh karo."; }
-  if (!$("v-wl").hidden) renderWl();
-  if (!$("v-news").hidden) newsShow();
+// ---- tiny Markdown renderer for the briefs: everything is escaped first, links must be http(s)
+function mdEm(s){
+  return s.replace(/\*\*(?=\S)(.+?)\*\*/g, "<b>$1</b>").replace(/__(?=\S)(.+?)__/g, "<b>$1</b>")
+    .replace(/(^|[^*\w])\*(?=\S)([^*]+?)\*(?!\w)/g, "$1<i>$2</i>").replace(/~~(?=\S)(.+?)~~/g, "<s>$1</s>");
 }
-function nDates(){
-  if (!NX) return [];
-  const t = istToday(), from = isoAdd(t, -(NS.days - 1));
-  return (NX.days || []).filter(d => d >= from && d <= t);
+function mdInline(s){
+  const keep = [], hold = h => "\u0001" + (keep.push(h) - 1) + "\u0002";
+  const a = (u, x) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${x}</a>`;
+  s = String(s).replace(/`([^`]+)`/g, (_, c) => hold(`<code>${esc(c)}</code>`))
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, x, u) => hold(a(u, mdEm(esc(x)))))
+    .replace(/https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]]/g, u => hold(a(u, esc(u))));
+  return mdEm(esc(s)).replace(/\u0001(\d+)\u0002/g, (_, i) => keep[+i]);
 }
-let nBusy = 0;
-async function newsShow(){
-  const need = nDates().filter(d => !NDAYS.has(d));
-  if (need.length) {
-    const my = ++nBusy;
-    $("nlist").innerHTML = `<div class="na" style="padding:16px 4px">News load ho rahi hai…</div>`;
-    await Promise.all(need.map(d => fetch(nUrl(d + ".json")).then(r => r.ok ? r.json() : null)
-      .then(j => { if (j && j.items) NDAYS.set(d, j.items); }).catch(() => {})));
-    if (my !== nBusy) return;
+function md(src){
+  const L = String(src || "").replace(/\r\n?/g, "\n").split("\n");
+  const LI = /^(\s*)([-*+•]|\d+[.)])\s+(.*)$/;
+  let out = "", i = 0, para = [], m;
+  const flush = () => { if (para.length) { out += `<p>${para.map(mdInline).join("<br>")}</p>`; para = []; } };
+  const cells = l => l.trim().replace(/\\\|/g, "\u0003").replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim().replace(/\u0003/g, "|"));
+  const isSep = l => l.includes("|") && l.includes("-") && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(l);
+  while (i < L.length) {
+    const l = L[i];
+    if (/^\s*```/.test(l)) { flush(); const code = []; i++; while (i < L.length && !/^\s*```/.test(L[i])) code.push(L[i++]); i++;
+      out += `<pre><code>${esc(code.join("\n"))}</code></pre>`; continue; }
+    if (!l.trim()) { flush(); i++; continue; }
+    if ((m = l.match(/^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/))) { flush(); const n = Math.min(m[1].length, 4); out += `<h${n}>${mdInline(m[2])}</h${n}>`; i++; continue; }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(l)) { flush(); out += "<hr>"; i++; continue; }
+    if (l.includes("|") && i + 1 < L.length && isSep(L[i + 1])) {
+      flush();
+      const head = cells(l), al = cells(L[i + 1]).map(c => /^:-+:$/.test(c) ? "center" : /-:$/.test(c) ? "right" : "");
+      const rows = []; i += 2;
+      while (i < L.length && L[i].includes("|") && L[i].trim()) rows.push(cells(L[i++]));
+      const td = (tag, c, j) => `<${tag}${al[j] ? ` style="text-align:${al[j]}"` : ""}>${mdInline(c || "")}</${tag}>`;
+      out += `<div class="mdt"><table><thead><tr>${head.map((c, j) => td("th", c, j)).join("")}</tr></thead><tbody>`
+        + rows.map(r => `<tr>${head.map((_, j) => td("td", r[j], j)).join("")}</tr>`).join("") + `</tbody></table></div>`;
+      continue;
+    }
+    if (/^\s*>/.test(l)) { flush(); const q = []; while (i < L.length && /^\s*>/.test(L[i])) q.push(L[i++].replace(/^\s*>\s?/, ""));
+      out += `<blockquote>${md(q.join("\n"))}</blockquote>`; continue; }
+    if ((m = l.match(LI))) {
+      flush();
+      const ol = /\d/.test(m[2]), start = ol ? parseInt(m[2], 10) : 1, items = [];
+      while (i < L.length && (m = L[i].match(LI)) && /\d/.test(m[2]) === ol) {
+        items.push([m[1].length, m[3]]); i++;
+        while (i < L.length && L[i].trim() && /^\s{2,}/.test(L[i]) && !LI.test(L[i])) items[items.length - 1][1] += " " + L[i++].trim();
+      }
+      const tag = ol ? "ol" : "ul";
+      out += `<${tag}${ol && start !== 1 ? ` start="${start}"` : ""}>${items.map(([ind, x]) => `<li${ind >= 2 ? ' class="sub"' : ""}>${mdInline(x)}</li>`).join("")}</${tag}>`;
+      continue;
+    }
+    para.push(l.trim()); i++;
   }
-  renderNews();
+  flush();
+  return out;
 }
-function nIn(k){
-  const f = NS.f;
-  if (f === "all") return true;
-  if (f === "wall") return getIt(k).lists.length > 0;
-  if (/^w\d$/.test(f)) return getIt(k).lists.includes(+f.slice(1));
-  return FSET[f] ? FSET[f].has(k) : true;
+
+// ---- Aaj tab: latest Trading Brief from the "Briefs" tab of the Sheet
+let aajIdx = 0;
+const briefLabel = b => [b.date, b.type].filter(Boolean).join(" · ");
+function vcls(v){
+  v = String(v || "");
+  if (/🟢|✅|📈/u.test(v)) return "up";
+  if (/🔴|❌|📉|⛔/u.test(v)) return "dn";
+  if (/🟡|🟠|⚠/u.test(v)) return "mid";
+  if (/bull|buy|positive|risk.?on|strong|aggressive|tezi/i.test(v)) return "up";
+  if (/bear|sell|avoid|negative|risk.?off|weak|defensive|mandi|no.?trade/i.test(v)) return "dn";
+  return "mid";
 }
-function nQ(k, sym, text, q){
-  if (!q) return true;
-  const s = BYK.get(k);
-  return (s ? s.s : sym || "").toUpperCase().includes(q) || (s && s.n.toUpperCase().includes(q)) || (text || "").toUpperCase().includes(q);
+async function aajShow(force){
+  const p = sdLoad("briefs", "briefs", force);
+  aajRender(); await p; aajRender();
 }
-function newsItem(it){
-  const [, t, k, sym, cats, h, u, src] = it, s = BYK.get(k), url = safeUrl(u);
-  const p = s ? px(s) : null;
-  const chg = p && p.d1 != null ? `<span class="nchg" style="color:${p.d1 > 0 ? "var(--up)" : p.d1 < 0 ? "var(--dn)" : "var(--mute)"}">${sgn(p.d1)}</span>` : "";
-  const lab = cats.includes("M") ? "Khabar padho ↗" : /\.pdf(\?|$)/i.test(url) ? "PDF ↗" : /\.zip(\?|$)/i.test(url) ? "ZIP ↗" : "Link ↗";
-  const a = x => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer"${x}`;
-  return `<div class="ni"><div class="nh"><button class="nstk" data-tk="${esc(k)}" title="Stock ki details"><b>${esc(s ? s.s : sym)}</b></button>${s ? scoreChip(s.ms) : ""}${chg}`
-    + `${[...cats].map(c => `<span class="ncat ${c}">${esc(NCAT[c] || c)}</span>`).join("")}</div>`
-    + `${url ? a(` class="nl">${esc(h)}</a>`) : `<div class="nl">${esc(h)}</div>`}`
-    + `<small>${esc(t.slice(11, 16))} · ${esc(src)}${url ? ` · ${a(`>${lab}</a>`)}` : ""}</small></div>`;
+function aajRender(){
+  const s = sdState("briefs"), list = (s.data && s.data.briefs) || [], stt = (s.data && s.data.status) || {};
+  if (aajIdx >= list.length) aajIdx = 0;
+  $("aajsel").hidden = list.length < 2;
+  $("aajsel").innerHTML = list.map((b, i) => `<option value="${i}">${i ? "" : "Latest · "}${esc(briefLabel(b) || "Brief " + (i + 1))}</option>`).join("");
+  $("aajsel").value = String(aajIdx);
+  const note = sdNote(s);
+  $("aajstat").innerHTML = `<b>System status</b> · Prices: ${esc(M.generated)} · Brief: ${esc(stt.brief || "—")} · Telegram: ${stt.telegram ? fmtTime(stt.telegram) : "—"}${note ? " · " + note : ""}`;
+  const b = list[aajIdx];
+  $("aajbox").innerHTML = b
+    ? `<div class="panel"><div class="verdict ${vcls(b.verdict)}">${mdInline(b.verdict || "—")}</div><div class="sub">${esc(briefLabel(b))}</div><div class="md">${md(b.md)}</div></div>`
+    : `<div class="panel">${sdMsg(s, "Sheet ke <b>Briefs</b> tab mein abhi koi brief nahi hai.")}</div>`;
 }
-function dayLabel(d){ const t = istToday(); return (d === t ? "Aaj · " : d === isoAdd(t, -1) ? "Kal · " : "") + fdIso(d); }
-function renderNews(){
-  const opts = [["all", `Sab stocks`], ["wall", `Meri Watchlist 1–5 (sab)`],
-    ...MYL.map(([id, name]) => [id, `${name} (${members(id).length})`]), ...FIXED.map(([id, name]) => [id, `${name} (${FSET[id].size})`])];
-  $("nfilter").innerHTML = opts.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join("");
-  $("nfilter").value = NS.f; $("ndays").value = String(NS.days);
-  const q = NS.q.trim().toUpperCase();
-  const base = [];
-  nDates().forEach(d => (NDAYS.get(d) || []).forEach(it => { if ((NS.k ? it[2] === NS.k : nIn(it[2])) && nQ(it[2], it[3], it[5], q)) base.push(it); }));
-  const cnt = {};
-  base.forEach(it => [...it[4]].forEach(c => { cnt[c] = (cnt[c] || 0) + 1; }));
-  $("ncats").innerHTML = NCATS.map(([c, t]) => `<button class="tg${nCats.has(c) ? " on" : ""}" data-ncat="${c}">${esc(t)} <small>${fmtInt(cnt[c] || 0)}</small></button>`).join("");
-  const list = nCats.size ? base.filter(it => [...it[4]].some(c => nCats.has(c))) : base;
-  list.sort((a, b) => a[1] < b[1] ? 1 : a[1] > b[1] ? -1 : 0);
-  let html = "", day = "";
-  list.slice(0, nLimit).forEach(it => {
-    const d = it[1].slice(0, 10);
-    if (d !== day) { day = d; html += `<div class="nday">${dayLabel(d)}</div>`; }
-    html += newsItem(it);
+$("aajsel").addEventListener("input", e => { aajIdx = +e.target.value || 0; aajRender(); window.scrollTo(0, 0); });
+$("aajref").onclick = () => aajShow(true);
+
+// ---- Telegram tab: posts from the "Telegram" tab of the Sheet (filled by the Telegram bot), last 7 days
+const TGCH = [["Broker report", "Broker report"], ["Sector report", "Sector report"], ["Result", "Result"], ["hold", "Meri holdings"]];
+const TGTY = {"Broker report": "b", "Sector report": "s", "Result": "r"};
+const tgF = new Set(jget("tg_f", []).filter(f => TGCH.some(c => c[0] === f)));
+let tgQs = "", tgMore = false;
+const tNum = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[₹,\s]/g, "").replace(/^rs\.?/i, "")); return n > 0 ? n : null; };
+const rcls = r => /buy|accumulate|\badd\b|outperform|overweight/i.test(r) ? "up" : /sell|reduce|underperform|underweight/i.test(r) ? "dn" : "";
+function tgStocks(t){
+  return String(t || "").split(/[,;|\n]+/).map(x => x.trim()).filter(Boolean).slice(0, 12).map(x => ({t: x, s: resolveToken(x)}));
+}
+async function tgShow(force){
+  const p = Promise.all([sdLoad("tg", "telegram", force), sdLoad("hold", "holdings", force)]);
+  tgRender(); await p; tgRender();
+}
+function tgItem(it){
+  const tl = safeUrl(it.link), fl = safeUrl(it.file), tgt = tNum(it.target);
+  const one = it.stk.length === 1;
+  const stk = it.stk.map(x => {
+    if (!x.s) return `<span class="tg">${esc(x.t)}</span>`;
+    const c = px(x.s).c, up = tgt && one && c ? (tgt / c - 1) * 100 : null;
+    return `<button class="tg" data-tk="${esc(x.s.k)}" title="Stock ki details"><b>${esc(x.s.s)}</b>${scoreChip(x.s.ms)}${up != null
+      ? `<span style="color:${chgCol(up)};font-weight:600">${up > 0 ? "+" : ""}${fmt(up, 1)}% upside</span>` : ""}</button>`;
+  }).join("");
+  const a = (u, cls, txt) => `<a class="${cls}" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
+  return `<div class="tgi${it.highlight ? " hl" : ""}"${tl ? ` data-tgl="${esc(tl)}"` : ""}>`
+    + `<div class="th"><span class="tgty ${TGTY[it.type] || "o"}">${esc(it.type || "Other")}</span>${it.house ? `<b>${esc(it.house)}</b>` : ""}`
+    + `${it.rating ? `<span class="rate ${rcls(it.rating)}">${esc(it.rating)}</span>` : ""}${tgt ? `<span>Target ₹${fmt(tgt, tgt >= 100 ? 0 : 2)}</span>` : ""}`
+    + `${it.mine ? `<span class="chip hold">Holding</span>` : ""}<span class="tt">${fmtTime(it.time)}${it.channel ? " · " + esc(it.channel) : ""}</span></div>`
+    + (tl ? a(tl, "hd", esc(it.headline || "Telegram post")) : `<div class="hd">${esc(it.headline || "Telegram post")}</div>`)
+    + (it.text ? `<div class="tx">${esc(it.text)}</div>` : "")
+    + (stk ? `<div class="stk">${stk}</div>` : "")
+    + `<div class="acts">${tl ? a(tl, "btn sm", "Telegram mein kholo ↗") : ""}${fl ? a(fl, "btn sm", "📄 File") : ""}</div></div>`;
+}
+function tgRender(){
+  const s = sdState("tg"), h = sdState("hold");
+  const mineSet = new Set((((h.data && h.data.holdings) || []).map(x => (resolveToken(x.symbol) || {}).k)).filter(Boolean));
+  const from = isoAdd(istToday(), -6);
+  const all = ((s.data && s.data.telegram) || []).filter(it => String(it.time || "").slice(0, 10) >= from).map(it => {
+    const stk = tgStocks(it.stocks);
+    return Object.assign({}, it, {stk, mine: !!it.holding || stk.some(x => x.s && (HELD.has(x.s.k) || mineSet.has(x.s.k)))});
   });
-  $("nonly").innerHTML = NS.k ? `<div class="chips" style="margin-top:8px"><button class="tg on" id="nonlyx">Sirf ${esc(symOf(NS.k))} ✕</button></div>` : "";
-  const emptyList = !NS.k && NS.f !== "all" && !(NS.f === "wall" ? [1,2,3,4,5].some(n => members("w" + n).length) : members(NS.f).length);
-  $("nlist").innerHTML = html || `<div class="na" style="padding:16px 4px">${nErr ? esc(nErr) : !NX ? "News load ho rahi hai…"
-    : emptyList ? "Is list mein abhi koi stock nahi. Watchlist tab mein stocks add karo." : "Is filter mein koi khabar nahi. Din badhao ya category hatao."}</div>`;
-  $("ninfo").textContent = list.length ? `${fmtInt(Math.min(nLimit, list.length))} / ${fmtInt(list.length)} khabrein · stock ke naam pe tap karo details ke liye` : "";
-  $("nmore").hidden = list.length <= nLimit;
-  renderCal(q);
-  $("nsync").textContent = NX && NX.updated ? `Updated ${fdIso(NX.updated.slice(0, 10))}, ${NX.updated.slice(11)}` : "";
-  const srcs = NX ? Object.entries(NX.status || {}).map(([k, v]) => `${NSRC[k] || k} ${v[0] === "ok" ? "✓" : "✗"}`).join(" · ") : "—";
-  $("nfoot").innerHTML = `Sources: ${esc(srcs)} (✗ = is baar us source se data nahi mila, baaki chalte rahe). News market wale din 9 AM se 4 PM tak har 30 min aur shaam ko ek baar update hoti hai (GitHub kabhi 10–20 min late chalata hai); 30 din tak rakhi jaati hai. Filings ka link exchange ki original PDF hai. BSE: sirf BSE-only stocks ki filings (NSE wale stocks ki wahi filing NSE pe aati hai). Media News: Google News se sirf headline, source, time aur link; Nifty 500, F&amp;O, IPO, top score aur aaj filing wale stocks ke liye. Score aur % change ${esc(M.asOf)} ke end-of-day data se. Not investment advice.`;
+  const q = tgQs.trim().toUpperCase();
+  const qOk = it => !q || [it.headline, it.text, it.stocks, it.house, it.channel, it.rating].some(v => String(v || "").toUpperCase().includes(q))
+    || it.stk.some(x => x.s && (x.s.s.toUpperCase().includes(q) || x.s.n.toUpperCase().includes(q)));
+  const base = all.filter(qOk);
+  const types = [...tgF].filter(f => f !== "hold");
+  const list = base.filter(it => (!types.length || types.includes(it.type)) && (!tgF.has("hold") || it.mine));
+  const cnt = f => base.filter(it => f === "hold" ? it.mine : it.type === f).length;
+  $("tgchips").innerHTML = TGCH.map(([f, t]) => `<button class="tg${tgF.has(f) ? " on" : ""}" data-tgf="${esc(f)}">${esc(t)} <small>${cnt(f)}</small></button>`).join("");
+  const hl = list.filter(it => it.highlight), rest = list.filter(it => !it.highlight);
+  let html = "";
+  if (!all.length) html = `<div class="panel">${sdMsg(s, "Pichhle 7 din mein Telegram tab mein koi post nahi.")}</div>`;
+  else if (!list.length) html = `<div class="panel na">Is filter mein koi post nahi. Chip hatao ya search khali karo.</div>`;
+  else {
+    html = hl.length ? hl.map(tgItem).join("") : `<div class="panel na">Koi highlighted post nahi. Baaki posts neeche hain.</div>`;
+    if (rest.length) html += `<details class="more" id="tgmore"${tgMore ? " open" : ""}><summary>Baaki posts (${rest.length})</summary>${rest.map(tgItem).join("")}</details>`;
+  }
+  $("tglist").innerHTML = html;
+  const tm = $("tgmore"); if (tm) tm.ontoggle = () => { tgMore = tm.open; };
+  const note = sdNote(s);
+  $("tgsync").innerHTML = (s.data && s.data.updated ? "Last post: " + fmtTime(s.data.updated) : "") + (note ? " · " + note : "");
+  $("tgfoot").innerHTML = `Sirf pichhle 7 din ki posts (Sheet mein 30 din rakhi jaati hain). Data sirf aapki Google Sheet ke <b>Telegram</b> tab se aata hai, public repo mein nahi. Upside = target ÷ latest close (${esc(M.asOf)}), sirf jab post mein ek hi stock ho. Score = Momentum Score. Card pe tap = Telegram post. Not investment advice.`;
 }
-function renderCal(q){
-  const t = istToday();
-  const cal = ((NX && NX.cal) || []).filter(c => c[0] >= t && (NS.k ? c[1] === NS.k : nIn(c[1])) && nQ(c[1], c[2], "", q));
-  $("ncal").hidden = !NX;
-  $("ncaln").textContent = `(${fmtInt(cal.length)} stocks · agle 7 din)`;
-  if (cal.length && cal.length <= 40 && !$("ncal").dataset.init) { $("ncal").open = true; $("ncal").dataset.init = 1; }
-  const by = new Map();
-  cal.forEach(c => { if (!by.has(c[0])) by.set(c[0], []); by.get(c[0]).push(c); });
-  const MAX = 60;
-  $("ncallist").innerHTML = [...by.entries()].map(([d, cs]) => {
-    cs.sort((a, b) => ((BYK.get(b[1]) || {}).ms || 0) - ((BYK.get(a[1]) || {}).ms || 0));
-    return `<div class="chgrow"><b>${dayLabel(d)} <span class="na">(${cs.length})</span></b><div class="chips">${cs.slice(0, MAX).map(c => { const s = BYK.get(c[1]);
-      return `<button class="tg" data-tk="${esc(c[1])}"><b>${esc(s ? s.s : c[2])}</b>${s ? ` <small>${s.ms}</small>` : ""}</button>`; }).join("")}`
-      + `${cs.length > MAX ? `<span class="na" style="align-self:center">+${cs.length - MAX} aur (score ke hisaab se top ${MAX}; list chuno ya search karo)</span>` : ""}</div></div>`;
-  }).join("") || `<div class="na" style="margin-top:8px">Agle 7 din mein ${NS.f === "all" ? "" : "is list ke "}kisi stock ki results date nahi mili.</div>`;
-}
-$("nfilter").addEventListener("input", e => { NS.f = e.target.value; NS.k = ""; nLimit = 100; nSave(); renderNews(); });
-$("ndays").addEventListener("input", e => { NS.days = +e.target.value; nLimit = 100; nSave(); newsShow(); });
-$("nq").addEventListener("input", e => { NS.q = e.target.value; nLimit = 100; renderNews(); });
-$("ncats").onclick = e => { const b = e.target.closest("[data-ncat]"); if (!b) return; const c = b.dataset.ncat;
-  nCats.has(c) ? nCats.delete(c) : nCats.add(c); nLimit = 100; nSave(); renderNews(); };
-$("nmore").onclick = () => { nLimit += 100; renderNews(); };
-$("nonly").onclick = e => { if (e.target.closest("#nonlyx")) { NS.k = ""; renderNews(); } };
-document.addEventListener("click", e => {            // 📰 in the Watchlist: today's news of that stock
-  const b = e.target.closest("[data-nk]"); if (!b) return;
-  e.stopPropagation(); e.preventDefault();
-  NS.k = b.dataset.nk; NS.q = ""; $("nq").value = ""; NS.days = Math.max(1, NS.days); nCats.clear(); nLimit = 100;
-  showView("news"); window.scrollTo(0, 0);
-}, true);
+$("tgchips").onclick = e => { const b = e.target.closest("[data-tgf]"); if (!b) return; const f = b.dataset.tgf;
+  tgF.has(f) ? tgF.delete(f) : tgF.add(f); store.set("tg_f", JSON.stringify([...tgF])); tgRender(); };
+$("tgq").addEventListener("input", e => { tgQs = e.target.value; tgRender(); });
+$("tgref").onclick = () => tgShow(true);
+$("tglist").addEventListener("click", e => {
+  if (e.target.closest("a,button,summary,input,select")) return;
+  const c = e.target.closest(".tgi[data-tgl]"); if (c && !String(window.getSelection() || "")) window.open(c.dataset.tgl, "_blank", "noopener");
+});
 
 function showView(v){
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
-  $("v-scan").hidden = v!=="scan"; $("v-pf").hidden = v!=="pf"; $("v-wl").hidden = v!=="wl"; $("v-news").hidden = v!=="news";
-  store.set("view", v);
+  ["aaj","tg","scan","wl","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
   if (v==="wl") renderWl();
-  if (v==="news") newsShow();
+  if (v==="aaj") aajShow();
+  if (v==="tg") tgShow();
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
 wlInit();
 render();
-showView(["pf","wl","news"].includes(store.get("view")) ? store.get("view") : "scan");
+showView("aaj");
 $("fsclose").onclick = closeFull;
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("fs").hidden) closeFull(); });
-newsIndex();
-loadPortfolio().then(() => { if (location.hash.startsWith("#c=")) openFull(decodeURIComponent(location.hash.slice(3))); });
+loadPortfolio().then(() => { if (!$("v-tg").hidden) tgRender(); if (location.hash.startsWith("#c=")) openFull(decodeURIComponent(location.hash.slice(3))); });
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
   navigator.serviceWorker.register("sw.js").catch(()=>{});
 }
