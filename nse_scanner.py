@@ -609,7 +609,7 @@ def main():
 
     print("Cap class…")
     add_mcap(stocks, index_members)
-    probe_yf()
+    probe_nse(latest_day)
 
     print("Fixed lists…")
     fixed, ipo_info = build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list, charts)
@@ -1004,6 +1004,41 @@ def add_mcap(stocks, index_members):
                 n += 1
                 break
     print(f"  cap class: {n} stocks")
+
+
+def probe_nse(d):
+    """PROBE ONLY (nothing shown in the app): do NSE's own daily files carry market cap / shares? -> data/nse_probe.json"""
+    dm, dy = f"{d:%d%m%y}", f"{d:%d%m%Y}"
+    base = "https://nsearchives.nseindia.com/"
+    urls = [f"content/cm/NSE_CM_security_{dy}.csv.gz", f"archives/equities/bhavcopy/pr/PR{dm}.zip",
+            f"archives/equities/mkt/MA{dm}.csv", f"archives/equities/mcap/MCAP{dy}.csv",
+            f"archives/equities/mcap/MCAP{dy}.zip", f"content/equities/MCAP{dy}.csv"]
+    out = {}
+    for u in urls:
+        raw, st = fetch(base + u, tries=1)
+        r = {"status": st, "bytes": len(raw) if raw else 0}
+        try:
+            if raw and u.endswith(".gz"):
+                txt = gzip.decompress(raw).decode("latin-1")
+                r["head"] = txt.splitlines()[:3]
+            elif raw and u.endswith(".zip"):
+                z = zipfile.ZipFile(io.BytesIO(raw))
+                r["files"] = z.namelist()[:40]
+                for n in z.namelist():
+                    if "mcap" in n.lower():
+                        r["mcap_file"] = n
+                        r["head"] = z.read(n).decode("latin-1").splitlines()[:4]
+                        r["rows"] = len(z.read(n).decode("latin-1").splitlines())
+            elif raw:
+                r["head"] = raw.decode("latin-1").splitlines()[:3]
+        except Exception as e:
+            r["err"] = str(e)[:100]
+        out[u] = r
+    try:
+        json.dump(out, open(os.path.join(DATA_DIR, "nse_probe.json"), "w"), indent=1)
+    except OSError:
+        pass
+    print("  nse probe:", {k: v["status"] for k, v in out.items()})
 
 
 def probe_yf():
