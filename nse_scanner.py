@@ -691,7 +691,14 @@ def momentum(a, c, bench3m):
         7.5 if a.get("d200") and c > a["d200"] else 0.0,        # above 200 DMA
         _lin(rs, -10, 25, 10),                 # 3M return vs Nifty 50
     ]
-    return int(sum(parts) + 0.5), [round(p, 1) for p in parts], r2(rs)   # half-up, same as the page
+    total = sum(parts)
+    if a.get("ipo") is not None:               # recent listing: judge only on the parts it has data for
+        mx = [20, 10 if ch.get("1W") is not None else 0, 10 if ch.get("1M") is not None else 0,
+              15 if ch.get("3M") is not None else 0, 10 if a.get("v20") is not None else 0, 10,
+              7.5 if a.get("d50") else 0, 7.5 if a.get("d200") else 0, 10 if rs is not None else 0]
+        if sum(mx) < 100:
+            total = total / sum(mx) * 100
+    return int(total + 0.5), [round(p, 1) for p in parts], r2(rs)   # half-up, same as the page
 
 
 def add_momentum(stocks, index_members):
@@ -724,7 +731,7 @@ def add_momentum(stocks, index_members):
 # ---------------------------------------------------------------- fixed lists + change log
 
 FIXED = [("n50", "Nifty 50"), ("n500", "Nifty 500"), ("fo", "F&O"),
-         ("nsme", "NSE SME"), ("bsme", "BSE SME"), ("ipo", "IPO")]
+         ("nsme", "NSE SME"), ("bsme", "BSE SME"), ("ipo", "IPO"), ("msh", "Mainboard Shift")]
 RECENT = 10          # a stock belongs to the SME lists if it traded in the last 10 sessions (SME stocks skip days)
 CHANGE_LOG = "list_changes.csv"
 LIST_STATE = "fixed_lists.json"
@@ -810,7 +817,29 @@ def build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list
             return recs[0][1] / f0[1]
         return 1.0
 
+    # SME -> mainboard migrations of the last year: seen on an SME series, now on a mainboard series
+    sme_seen, main_since = {}, {}
+    for d, rows in nse_days:
+        for r in rows.values():
+            k = chart_id("nse", r)
+            if r["series"] in NSE_SME:
+                sme_seen[k] = d
+                main_since.pop(k, None)
+            elif r["series"] in NSE_MAIN and k in sme_seen and k not in main_since:
+                main_since[k] = d
+    main_now_k = {chart_id("nse", r) for r in latest.values() if r["series"] in NSE_MAIN}
+    fixed["nsme"] = {k: v for k, v in nsme.items() if k not in main_now_k} or None     # migrated stocks leave the SME list at once
+    sym_now = {chart_id("nse", r): r["sym"] for r in latest.values()}
+    msh = {k: sym_now[k] for k, d0 in main_since.items() if k in main_now_k and d0 > cutoff}
+    def open_on(k, day):
+        for rec in charts.get(k) or []:
+            if rec[0] >= day:
+                return rec[1]
+        return None
     ipo, info = {}, {}
+    for k, d0 in main_since.items():
+        if k in msh:
+            info[k] = [d0.isoformat(), None, r2(open_on(k, d0))]
     nse_ipos = load_nse_ipos()
     if nse_ipos is None:
         print("  NSE IPO list unavailable — IPO list kept from the previous run")
@@ -818,6 +847,13 @@ def build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list
         for sym, (ld, price) in nse_ipos.items():
             k = nkey(sym)
             if cutoff < ld <= latest_day and k in recent:
+                f1 = first.get(k)
+                if k in msh or (f1 and f1[0] < ld - timedelta(days=5) and k in main_now_k):
+                    # already traded before this listing date = SME stock that moved to mainboard, not an IPO
+                    if k not in msh:
+                        msh[k] = sym
+                        info[k] = [ld.isoformat(), None, r2(open_on(k, ld))]
+                    continue
                 ipo[k] = sym
                 f0, adj = first.get(k), split_factor_since_listing(k)
                 info[k] = [ld.isoformat(), r2(price * adj) if price else None, r2(f0[1] * adj) if f0 else None]
@@ -828,6 +864,7 @@ def build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list
             ipo[k] = sym
             info[k] = [d.isoformat(), None, r2(o * split_factor_since_listing(k))]
     fixed["ipo"] = ipo if nse_ipos is not None else None
+    fixed["msh"] = msh
     print("  " + ", ".join(f"{lid}: {'—' if v is None else len(v)}" for lid, v in fixed.items()))
     return fixed, info
 
@@ -861,15 +898,17 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
             if old is not None:
                 print(f"  {label}: source unavailable today, keeping the previous list")
             new = old or {}
-        elif old and len(new) < 0.8 * len(old):
+        elif old and len(new) < 0.8 * len([k for k in old if k not in (fixed.get("msh") or {}) or lid != "ipo"]):
             print(f"  {label}: only {len(new)} vs {len(old)} yesterday — looks like a data problem, keeping the previous list")
             new = old
         new = dict(new)
-        if lid in ("nsme", "bsme", "ipo") and old:
+        if lid in ("nsme", "bsme", "ipo", "msh") and old:
             # illiquid stocks skip days: they leave only after RECENT sessions without a trade,
             # unless the reason is clear (moved to mainboard, IPO older than a year)
             for k in set(old) - set(new):
-                if (lid == "nsme" and k in main_now) or (lid == "ipo" and ipo_dates.get(k, "9") <= cutoff):
+                if (lid == "nsme" and k in main_now) or (lid in ("ipo", "msh") and ipo_dates.get(k, "9") <= cutoff):
+                    continue
+                if lid == "ipo" and k in (fixed.get("msh") or {}):       # moved to the Mainboard Shift list
                     continue
                 c = (base_miss.get(lid) or {}).get(k, 0) + 1
                 if c < RECENT:
@@ -896,8 +935,10 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
                              "Exchange": "BSE" if k.startswith("B_") else "NSE", "Key": k, "Reason": ""})
                 added += 1
             for k in sorted(set(old) - set(new)):
-                if lid == "ipo" and ipo_dates.get(k, "9") <= cutoff:
+                if lid in ("ipo", "msh") and ipo_dates.get(k, "9") <= cutoff:
                     why = "1 saal pura"
+                elif lid == "ipo" and k in today["msh"]:
+                    why = "SME se aaya tha - Mainboard Shift list mein"
                 elif lid == "nsme" and k in main_now:
                     why = "mainboard pe migrate"
                 elif k not in traded_recent or (base_miss.get(lid) or {}).get(k):
@@ -916,7 +957,7 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
         w.writerows(sorted(rows, key=lambda r: (r["Date"], r["List"], r["Change"], r["Symbol"])))
     with open(state_path, "w", encoding="utf-8") as f:
         json.dump({"date": iso, "lists": today, "miss": miss,
-                   "ipo_dates": {k: v for k, v in ipo_dates.items() if k in today["ipo"]},
+                   "ipo_dates": {k: v for k, v in ipo_dates.items() if k in today["ipo"] or k in today["msh"]},
                    "base_date": base_date, "base": base, "base_miss": base_miss, "base_ipo": base_ipo},
                   f, separators=(",", ":"))
 
@@ -934,7 +975,7 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
             chg["new"].setdefault(r["Key"], []).append([lid, r["Date"]])
         if r["Date"] == iso:
             chg["today"].append([lid, "+" if r["Change"] == "added" else "-", r["Key"], r["Symbol"], r["Reason"]])
-    for k in today["ipo"]:                    # kept for a few quiet days: still show the listing date
+    for k in list(today["ipo"]) + list(today["msh"]):                    # kept for a few quiet days: still show the listing date
         ipo_info.setdefault(k, [ipo_dates.get(k), None, None])
     lists = {lid: sorted(today[lid]) for lid, _ in FIXED}
     return lists, chg
@@ -1739,7 +1780,7 @@ function render(){
     const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
       <td>${fmt(s.c)}</td>
       <td><span class="pill ${cls}">${sgn(c)}</span></td>
-      <td class="hide-m">${scoreChip(s.ms)}</td>
+      <td class="hide-m">${scoreChip(s.ms,s)}</td>
       <td class="hide-m">${sgn(s.f52)}</td>
       <td class="hide-m">${s.vx==null?"—":fmt(s.vx,1)+"×"}</td>
       <td class="l hide-m">${dvCell(s)}</td>
@@ -1969,7 +2010,7 @@ const MP = D.mprev || {};
 const BYCODE = new Map(S.filter(s => s.code).map(s => [String(s.code), s]));
 S.forEach(s => { if (s.bc && !BYCODE.has(String(s.bc))) BYCODE.set(String(s.bc), s); });   // NSE stock by its BSE scrip code
 const cmpStr = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-const scoreChip = v => v==null ? `<span class="na">—</span>` : `<span class="score ${v>=70?"hi":v>=40?"mid":"lo"}">${v}</span>`;
+const scoreChip = (v, s) => v==null ? `<span class="na">—</span>` : `<span class="score ${v>=70?"hi":v>=40?"mid":"lo"}"${s && s.ipo!=null && s.ipo<20 ? ' title="Bahut nayi listing (20 session se kam): score approx hai"' : ""}>${s && s.ipo!=null && s.ipo<20 ? "~" : ""}${v}</span>`;
 // same parts, order and maths as momentum() in nse_scanner.py
 const lin = (x, lo, hi, pts) => x==null ? 0 : Math.max(0, Math.min(1, (x-lo)/(hi-lo))) * pts;
 function momParts(s){
@@ -1977,7 +2018,8 @@ function momParts(s){
   const gap = d.st==="box" && d.t ? (d.t - s.c)/d.t*100 : null;
   const pdv = d.st==="bo" ? 10 : gap==null ? 0 : gap <= 3 ? 7 : gap <= 7 ? 4 : 2;
   const rs = ch["3M"]==null || M.bench3M==null ? null : ch["3M"] - M.bench3M;
-  return {rs, v20:m[0], d50:m[1], d200:m[2], p:[
+  const mx = s.ipo==null ? null : [20, ch["1W"]==null?0:10, ch["1M"]==null?0:10, ch["3M"]==null?0:15, m[0]==null?0:10, 10, m[1]?7.5:0, m[2]?7.5:0, rs==null?0:10];
+  return {rs, v20:m[0], d50:m[1], d200:m[2], mx, p:[
     lin(s.f52, -25, 0, 20), lin(ch["1W"], -5, 10, 10), lin(ch["1M"], -10, 20, 10), lin(ch["3M"], -15, 40, 15),
     (ch["1D"]||0) >= 0 ? lin(m[0], 0.5, 2.5, 10) : 0, pdv,
     m[1] && s.c > m[1] ? 7.5 : 0, m[2] && s.c > m[2] ? 7.5 : 0, lin(rs, -10, 25, 10)]};
@@ -2039,7 +2081,7 @@ window.LIVE_FEED = {
 };
 
 // ---- lists
-const FIXED = [["n50","Nifty 50","N50"],["n500","Nifty 500","N500"],["fo","F&O","F&O"],["nsme","NSE SME","SME"],["bsme","BSE SME","BSE SME"],["ipo","IPO","IPO"]];
+const FIXED = [["n50","Nifty 50","N50"],["n500","Nifty 500","N500"],["fo","F&O","F&O"],["nsme","NSE SME","SME"],["bsme","BSE SME","BSE SME"],["ipo","IPO","IPO"],["msh","Mainboard Shift","Shift"]];
 const MYL = [1,2,3,4,5].map(n => ["w"+n, "Watchlist "+n, "W"+n]);
 const LNAME = Object.fromEntries([...FIXED, ...MYL, ["old","Hataye gaye","Old"]].map(x => [x[0], x[1]]));
 const LLAB = Object.fromEntries([...FIXED, ...MYL].map(x => [x[0], x[2]]));
@@ -2243,8 +2285,8 @@ const SORTS = [
   ["rk", "Rank gain (kal se)", k => rankChg(k)],
   ["price", "Price", (k,s) => s && px(s).c],
   ["name", "Naam A–Z", (k,s) => (s ? s.n : getIt(k).name || symOf(k)).toUpperCase()],
-  ["ipod", "IPO: listing date", k => IPO[k] ? IPO[k][0] : null],
-  ["ipor", "IPO: % vs issue price", k => ipoPct(k)],
+  ["ipod", "IPO / Shift: date", k => IPO[k] ? IPO[k][0] : null],
+  ["ipor", "IPO / Shift: % vs issue / pehla din", k => ipoPct(k)],
 ];
 const SORTF = Object.fromEntries(SORTS.map(x => [x[0], x[2]]));
 let SO = Object.assign({by:"score", asc:false}, jget("wl_sort", {}));
@@ -2284,22 +2326,22 @@ function labels(k){
   return out.join("");
 }
 function ipoLine(k, s){
-  const i = IPO[k]; if (!i || !FSET.ipo.has(k)) return "";
+  const i = IPO[k], shift = FSET.msh.has(k); if (!i || !(FSET.ipo.has(k) || shift)) return "";
   const pct = ipoPct(k), days = ISO && i[0] ? dayNum(ISO) - dayNum(i[0]) : null;
-  const ref = i[1] ? `Issue ₹${fmt(i[1])}` : i[2] ? `Listing din open ₹${fmt(i[2])}` : "issue price nahi mila";   // split/bonus adjusted
-  return `<small class="ipol">IPO: ${fdIso(i[0])} · ${ref}${s ? ` · abhi ₹${fmt(px(s).c)}` : ""}${pct == null ? "" : ` · <b style="color:${pct>=0?"var(--up)":"var(--dn)"}">${sgn(pct)}</b>`}${days == null ? "" : ` · ${days} din`}</small>`;
+  const ref = shift ? (i[2] ? `Mainboard pehle din open ₹${fmt(i[2])}` : "pehle din ka price nahi mila") : i[1] ? `Issue ₹${fmt(i[1])}` : i[2] ? `Listing din open ₹${fmt(i[2])}` : "issue price nahi mila";   // split/bonus adjusted
+  return `<small class="ipol">${shift ? "Mainboard Shift" : "IPO"}: ${fdIso(i[0])} · ${ref}${s ? ` · abhi ₹${fmt(px(s).c)}` : ""}${pct == null ? "" : ` · <b style="color:${pct>=0?"var(--up)":"var(--dn)"}">${sgn(pct)}</b>`}${days == null ? "" : ` · ${days} din`}</small>`;
 }
 
 function wlEditor(k, s){
   const it = getIt(k), mine = new Set(it.tags), m = momParts(s);
   const parts = MOM_PARTS.map(([lab, max, why], i) => { const p = m.p[i] || 0;
-    return `<tr><td>${lab}<small>${why(s, m)}</small><div class="bar"><i style="width:${Math.round(p/max*100)}%"></i></div></td><td class="p">${fmt(p,1).replace(/\.0$/,"")} / ${max}</td></tr>`; }).join("");
+    return `<tr><td>${lab}<small>${why(s, m)}</small><div class="bar"><i style="width:${Math.round(p/max*100)}%"></i></div></td><td class="p">${m.mx && m.mx[i]===0 ? "— (data nahi)" : fmt(p,1).replace(/\.0$/,"") + " / " + max}</td></tr>`; }).join("");
   const h = histCache.get(k) || [];
   const hist = [1,2,3,4,5].map(n => { const r = h.filter(x => x[1] === n).slice(-10); return r.length > 1 ? `W${n}: ${r.map(x => `<span title="${esc(x[0])}">${x[2]}</span>`).join(" → ")}` : ""; }).filter(Boolean);
   const auto = autoOf(s);
   return `<div class="wled">
-    <div><h4>Momentum Score: ${scoreChip(s.ms)} <span class="na" style="font-weight:400">${MP[k] != null ? ` · kal ${MP[k]}` : ""} · rank ${RANK.get(k)||"—"}${PRANK.get(k)?` (kal ${PRANK.get(k)})`:""}</span></h4>
-      <table class="mbk">${parts}<tr><td><b>Total</b></td><td class="p">${s.ms} / 100</td></tr></table>
+    <div><h4>Momentum Score: ${scoreChip(s.ms,s)} <span class="na" style="font-weight:400">${MP[k] != null ? ` · kal ${MP[k]}` : ""} · rank ${RANK.get(k)||"—"}${PRANK.get(k)?` (kal ${PRANK.get(k)})`:""}</span></h4>
+      <table class="mbk">${parts}<tr><td><b>Total</b></td><td class="p">${s.ms} / 100</td></tr>${m.mx && m.mx.reduce((a,b)=>a+b,0) < 100 ? `<tr><td colspan="2"><small>Nayi listing: jin parts ka data nahi hai unhe hata kar, mile hue parts ko 100 mein scale kiya (${fmt(m.p.reduce((a,b)=>a+b,0),1)} ÷ ${fmt(m.mx.reduce((a,b)=>a+b,0),1)} × 100).</small></td></tr>` : ""}</table>
       ${hist.length ? `<div class="hint">Rank history (list ke andar): ${hist.join(" · ")}</div>` : ""}</div>
     <div><h4>Watchlist mein</h4><div class="chips">${[1,2,3,4,5].map(n => `<button class="tg${it.lists.includes(n)?" on":""}" data-wlist="${n}" data-k="${esc(k)}">W${n}</button>`).join("")}</div>
       ${auto.length ? `<h4 style="margin-top:12px">Auto tags</h4><div class="chips">${auto.map(t => `<span class="tag a">${esc(t)}</span>`).join("")}</div>` : ""}
@@ -2370,14 +2412,14 @@ function renderWl(order){
     const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
       <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
-      <td>${scoreChip(s.ms)}</td>
+      <td>${scoreChip(s.ms,s)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
     return main + (wlOpen.has(k) ? detail(s, held, NC, "wl", wlEditor(k, s)) : "");
   }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">${!GS.on.size ? "Upar koi list on karo." : wlVisible.length ? "Is filter mein koi stock nahi." : "Is list mein abhi koi stock nahi. “+ Stocks add karo” kholo, ya Scanner mein kisi stock pe “+ WL” dabao."}</td></tr>`;
   $("wlinfo").textContent = list.length ? `${fmtInt(Math.min(wlLimit, list.length))} / ${fmtInt(list.length)} dikh rahe · tap karo score ka breakdown, notes aur chart ke liye` : "";
   $("wlmore").hidden = list.length <= wlLimit;
-  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
+  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), Mainboard Shift: pichhle 1 saal mein NSE SME se mainboard pe aaye stocks (ye IPO list mein nahi ginte). Nayi listing ka score: jis part ka data nahi (3M, 50/200 DMA, Nifty) use hata kar baaki ko 100 mein scale karte hain; 20 session se kam wale pe ~ lagta hai. IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
   wlDirty = false;
   mountCharts();
 }
@@ -2849,7 +2891,7 @@ function tgItem(it){
   const stk = it.stk.map(x => {
     if (!x.s) return `<span class="tg">${esc(x.t)}</span>`;
     const c = px(x.s).c, up = tgt && one && c ? (tgt / c - 1) * 100 : null;
-    return `<button class="tg" data-tk="${esc(x.s.k)}" title="Stock ki details"><b>${esc(x.s.s)}</b>${scoreChip(x.s.ms)}${up != null
+    return `<button class="tg" data-tk="${esc(x.s.k)}" title="Stock ki details"><b>${esc(x.s.s)}</b>${scoreChip(x.s.ms,x.s)}${up != null
       ? `<span style="color:${chgCol(up)};font-weight:600">${up > 0 ? "+" : ""}${fmt(up, 1)}% upside</span>` : ""}</button>`;
   }).join("");
   const a = (u, cls, txt) => `<a class="${cls}" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
