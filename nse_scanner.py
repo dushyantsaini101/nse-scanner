@@ -902,6 +902,8 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
             print(f"  {label}: only {len(new)} vs {len(old)} yesterday — looks like a data problem, keeping the previous list")
             new = old
         new = dict(new)
+        if lid in ("ipo", "nsme"):                 # a stock moved to Mainboard Shift never stays in these lists (even from a kept old list)
+            new = {k: v for k, v in new.items() if k not in (fixed.get("msh") or {})}
         if lid in ("nsme", "bsme", "ipo", "msh") and old:
             # illiquid stocks skip days: they leave only after RECENT sessions without a trade,
             # unless the reason is clear (moved to mainboard, IPO older than a year)
