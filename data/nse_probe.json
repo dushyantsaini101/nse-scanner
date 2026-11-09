@@ -1,0 +1,60 @@
+{
+ "content/cm/NSE_CM_security_09112026.csv.gz": {
+  "status": "ok",
+  "bytes": 1282023,
+  "head": [
+   "FinInstrmId,TckrSymb,SctySrs,FinInstrmNm,ISIN,NewBrdLotQty,ParVal,SctyTpFlg,BidIntrvl,TrckgInd,CallAuctnInd,BookClsrStartDt,BookClsrEndDt,NoDlvryStartDt,NoDlvryEndDt,IssdCptl,PrtdToTrad,PricRg,SctyStsNrmlMkt,ElgbltyNrmlMkt,SctyStsOddLotMkt,ElgbltyOddLotMkt,SctyStsRETDBTMkt,ElgbltyClsgAuctnSsn,SctyStsAuctnMkt,ElgbltyAuctnMkt,SctyStsAddtlMkt1,ElgbltyAddtlMkt1,SctyStsAddtlMkt2,ElgbltyAddtlMkt2,IsseDt,FrstPmtDt,MtrtyDt,MaxTradQtyPctg,ListgDt,RmvlDt,RadmssnDt,RcrdDt,IndxPrtcptnInd,AllOrNn,MinFill,SttlmTp,Dvdd,Rghts,Bns,Intrst,AGMtg,EGMtg,MktMakrSprd,MktMakrMinQty,AddtlInf,UpdDt,DelFlg,SpclExDt,Xchg,UnqPdctIdr,SctyTp,TickSz,XchgExclsv,Sts,ExDvddDt,ExBnsDt,ExRghtsDt,FinInstrmTp,InstrmTp,TradgPrtd,BuyBckInd,TradToTradInd,Indx,IndxInstrm,FinInstrmAttrbts,MinLot,UndrlygInstrmAsstClss,UndrlygInstrm,UndrlygFinInstrmId,BlckDealAllwdFlg,InstrmNm,MktTpAndId,UnitOfMeasr,PricQtQty,PricRgTp,MaxPric,MinPric,SttlmMtd,InitlMrgnTp,BuyInitlMrgnRate,IssePric,MaxSnglTxnQty,MaxSnglTxnVal,AsstClss,PricNmrtr,Spcfctn,PricDnmtr,GnlNmrtr,GnlDnmtr,LotNmrtr,LotDnmtr,DcmlstnPric,SrsSttlmTp,FreeFltCptl,SellInitlMrgnRate,RatgDtls,FinInstrmClssfctn,SpclMrgnTp,BuySpclMrgnRat,SellSpclMrgnRat,PreOpnAllwdFlg,ClssfctnTp,MtchgCrit,ValMtd,SLBMElgblty,Sgmt,Ccy,SttlmCcy,Rsvd02,Rsvd03,Rsvd04,Rsvd05,Rsvd06,Rsvd07",
+   "14747,011NSETEST,EQ,011NSETEST,DUMMYSAN005,1,1000,0,5,0,1,0,0,0,0,1.00000000000000E+08,0,180.00-220.00,6,1,2,0,2,0,2,1,1,0,1,0,1364688000,0,0,5000,1364688000,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,,1478717345,N,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,",
+   "14751,021NSETEST,EQ,021NSETEST,DUMMYSAN006,1,1000,0,5,0,1,0,0,0,0,1.00000000000000E+08,0,180.00-220.00,6,1,2,0,2,0,2,1,1,0,1,0,1364688000,0,0,5000,1364688000,0,0,0,0,1,1,1,0,0,0,0,0,0,0,0,,1478717345,N,0,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,"
+  ]
+ },
+ "archives/equities/bhavcopy/pr/PR091126.zip": {
+  "status": "ok",
+  "bytes": 698422,
+  "files": [
+   "an09112026.txt",
+   "bc09112026.csv",
+   "bh09112026.csv",
+   "bm09112026.txt",
+   "corpbond09112026.csv",
+   "etf09112026.csv",
+   "gl09112026.csv",
+   "hl09112026.csv",
+   "mcap09112026.csv",
+   "pd09112026.csv",
+   "pr09112026.csv",
+   "readme.txt",
+   "sme09112026.csv",
+   "tt09112026.csv"
+  ],
+  "mcap_file": "mcap09112026.csv",
+  "head": [
+   "Trade Date,Symbol,Series,Security Name,Category,Last Trade Date,Face Value(Rs.),Issue Size,Close Price/Paid up value(Rs.),Market Cap(Rs.)              ",
+   "09 NOV 2026,20MICRONS,EQ,20 MICRONS LTD           ,Listed    ,09 NOV 2026,               5.00,          35286502,            187.35,     6610220419.65 ",
+   "09 NOV 2026,21STCENMGM,BE,21ST CENTURY MGMT SERVICE,Listed    ,09 NOV 2026,              10.00,          10500000,             54.55,      572565000.00",
+   "09 NOV 2026,360ONE,EQ,360 ONE WAM LIMITED      ,Listed    ,09 NOV 2026,               1.00,         407914200,           1138.00,   464206359600.00    "
+  ],
+  "rows": 3261
+ },
+ "archives/equities/mkt/MA091126.csv": {
+  "status": "ok",
+  "bytes": 236745,
+  "head": [
+   ",09-Nov-2026",
+   "The Nifty witnessed an intraday movement of about 245.3 points.The closing index was 0.23 % up as compared to the previous closing index.",
+   ""
+  ]
+ },
+ "archives/equities/mcap/MCAP09112026.csv": {
+  "status": "missing",
+  "bytes": 0
+ },
+ "archives/equities/mcap/MCAP09112026.zip": {
+  "status": "missing",
+  "bytes": 0
+ },
+ "content/equities/MCAP09112026.csv": {
+  "status": "missing",
+  "bytes": 0
+ }
+}
