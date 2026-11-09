@@ -607,8 +607,8 @@ def main():
     mom_prev, bench = add_momentum(stocks, index_members)
     print(f"  benchmark (Nifty 50 equal-weight) 3M: today {bench[0]}%, previous session {bench[1]}%")
 
-    print("Market cap…")
-    add_mcap(stocks)
+    print("Cap class…")
+    add_mcap(stocks, index_members)
 
     print("Fixed lists…")
     fixed, ipo_info = build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list, charts)
@@ -986,90 +986,23 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
     return lists, chg
 
 
-MCAP_URL = ("https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w"
-            "?Group=&Scripcode=&industry=&segment=Equity&status=Active")
-MCAP_ANCHORS = {"INE002A01018": (6e5, 5e6), "INE467B01029": (3e5, 2.5e6)}   # RELIANCE, TCS: sanity range in Rs Cr
+CAP_INDICES = [("L", "Nifty 100"), ("M", "Nifty Midcap 150"), ("S", "Nifty Smallcap 250"), ("Mi", "Nifty Microcap 250")]
 
 
-def _num_mc(v):
-    try:
-        return float(str(v).replace(",", "").strip())
-    except ValueError:
-        return None
-
-
-def load_mcap():
-    """{ISIN: market cap in Rs Cr} from BSE's list of scrips (free). Empty dict if it can't be fetched or
-    fails the sanity check (Reliance / TCS must land in a believable range). Also writes data/mcap_probe.json."""
-    cache_file = os.path.join(CACHE, "bse_mcap.json")
-    probe = {"fetched": False}
-    data = None
-    try:
-        if os.path.exists(cache_file) and time.time() - os.path.getmtime(cache_file) < 20 * 3600:
-            data = json.load(open(cache_file, encoding="utf-8"))
-        else:
-            raw, status = fetch(MCAP_URL, headers={"User-Agent": UA, "Accept": "application/json, text/plain, */*",
-                                                   "Referer": "https://www.bseindia.com/",
-                                                   "Origin": "https://www.bseindia.com"})
-            probe["status"] = status
-            if raw:
-                data = json.loads(raw)
-                if isinstance(data, dict):
-                    data = next((v for v in data.values() if isinstance(v, list)), None)
-                if isinstance(data, list) and len(data) > 1000:
-                    json.dump(data, open(cache_file, "w", encoding="utf-8"))
-                else:
-                    data = None
-    except (ValueError, OSError) as e:
-        probe["error"] = str(e)[:100]
-        data = None
-    out = {}
-    if data:
-        probe.update(fetched=True, rows=len(data), keys=sorted(data[0].keys()) if isinstance(data[0], dict) else [])
-        kmc = next((k for k in data[0] if re.search(r"mkt\s*cap|market\s*cap|mcap", k, re.I)), None)
-        kisin = next((k for k in data[0] if "isin" in k.lower()), None)
-        probe.update(mcap_key=kmc, isin_key=kisin)
-        if kmc and kisin:
-            for x in data:
-                v, isin = _num_mc(x.get(kmc)), str(x.get(kisin) or "").strip().upper()
-                if v and v > 0 and isin.startswith("INE"):
-                    out[isin] = v
-            if out and max(out.values()) > 1e9:                  # rupees, not crore
-                out = {k: v / 1e7 for k, v in out.items()}
-                probe["unit"] = "rupees"
-            else:
-                probe["unit"] = "crore"
-            probe["count"] = len(out)
-            probe["anchors"] = {k: out.get(k) for k in MCAP_ANCHORS}
-            bad = [k for k, (lo, hi) in MCAP_ANCHORS.items() if k in out and not lo <= out[k] <= hi]
-            if bad or not any(k in out for k in MCAP_ANCHORS):
-                probe["rejected"] = "sanity check failed" if bad else "anchors missing"
-                out = {}
-    probe["used"] = bool(out)
-    try:
-        json.dump(probe, open(os.path.join(DATA_DIR, "mcap_probe.json"), "w"), indent=1)
-    except OSError:
-        pass
-    print(f"  market cap: {len(out)} stocks" if out else f"  market cap unavailable ({probe.get('rejected') or probe.get('status') or probe.get('error') or 'no data'})")
-    return out
-
-
-def add_mcap(stocks):
-    """s['mc'] = market cap Rs Cr, s['mcl'] = L / M / S / Mi (rank 100 / 250 / 500 among mainboard, rest = Micro)."""
-    mc = load_mcap()
-    if not mc:
-        return
+def add_mcap(stocks, index_members):
+    """s['mcl'] = L / M / S / Mi from NSE's own index lists: Nifty 100 / Midcap 150 / Smallcap 250 / Microcap 250.
+    Only NSE stocks in one of those lists get a class; the rest stay blank."""
+    sets = [(code, set(index_members.get(label) or [])) for code, label in CAP_INDICES]
+    n = 0
     for s in stocks:
-        v = mc.get(s["i"])
-        if v:
-            s["mc"] = round(v) if v >= 100 else round(v, 1)
-    ranked = sorted({s["i"]: s["mc"] for s in stocks if s.get("mc") and s["seg"] in ("NSE", "BSE")}.items(),
-                    key=lambda kv: -kv[1])
-    rank = {isin: i + 1 for i, (isin, _) in enumerate(ranked)}
-    for s in stocks:
-        if s.get("mc"):
-            r = rank.get(s["i"])
-            s["mcl"] = "L" if r and r <= 100 else "M" if r and r <= 250 else "S" if r and r <= 500 else "Mi"
+        if s["x"] != "N":
+            continue
+        for code, members in sets:
+            if s["s"] in members:
+                s["mcl"] = code
+                n += 1
+                break
+    print(f"  cap class: {n} stocks")
 
 
 def chart_id(ex, r):
@@ -1113,7 +1046,7 @@ def write_csv(stocks, index_members, meta):
                    + ["High_52W", "From_52WH_pct", "New_52W_High", "Vol_x_50d",
                       "Darvas_Status", "Box_Top", "Box_Bottom", "Box_Sessions",
                       "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices", "ISIN",
-                      "Momentum_Score", "Market_Cap_Cr", "Cap_Class"])
+                      "Momentum_Score", "Cap_Class"])
         for s in stocks:
             dv = s.get("dv") or {}
             w.writerow([s["s"], "BSE" if s["x"] == "B" else "NSE", s["code"], s["n"], s["seg"],
@@ -1123,7 +1056,7 @@ def write_csv(stocks, index_members, meta):
                           dv.get("st", ""), dv.get("t", ""), dv.get("b", ""), dv.get("d", ""),
                           s["ipo"] or "", s["ib"], s["v"], s["tv"],
                           "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else "", s["i"], s["ms"],
-                          s.get("mc", ""), {"L": "Large", "M": "Mid", "S": "Small", "Mi": "Micro"}.get(s.get("mcl"), "")])
+                          {"L": "Large", "M": "Mid", "S": "Small", "Mi": "Micro"}.get(s.get("mcl"), "")])
     with open(os.path.join(DATA_DIR, "meta_full.json"), "w") as f:
         json.dump(meta, f, indent=1)
 
@@ -1469,7 +1402,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
       <option value="all">All stocks</option><option value="up">Gainers only</option><option value="dn">Losers only</option></select></label>
     <label class="l">Sort by<select id="sortsel"></select></label>
     <label class="l grow">Sector<select id="sector"></select></label>
-    <label class="l" id="mcapl">Market cap<select id="mcap"><option value="">All sizes</option><option value="L">Large (top 100)</option><option value="M">Mid (101–250)</option><option value="S">Small (251–500)</option><option value="Mi">Micro (rest)</option></select></label>
+    <label class="l" id="mcapl">Cap size<select id="mcap"><option value="">All sizes</option><option value="L">Large (Nifty 100)</option><option value="M">Mid (Midcap 150)</option><option value="S">Small (Smallcap 250)</option><option value="Mi">Micro (Microcap 250)</option></select></label>
   </div>
   <details>
     <summary>More filters</summary>
@@ -1550,8 +1483,7 @@ $("sector").add(new Option("All sectors",""));
 [...new Set(S.map(s=>s.sec).filter(Boolean))].sort().forEach(s => $("sector").add(new Option(s,s)));
 [["chg","% change"],["ms","Momentum score"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["tv","Traded value"],["sym","Symbol A–Z"]]
   .forEach(([v,t])=>$("sortsel").add(new Option(t,v)));
-const HAS_MC = S.some(s => s.mc);
-if (HAS_MC) $("sortsel").add(new Option("Market cap","mc")); else $("mcapl").hidden = true;
+if (!S.some(s => s.mcl)) $("mcapl").hidden = true;
 
 const COLS = [
   {k:"sym", t:"Stock", cls:"l"},
@@ -1819,7 +1751,7 @@ function detail(s, ctx, cols, view, pre){
   } else add("Darvas box", d.st==="form" ? "Box still forming" : "Not enough history");
   if (ctx && ctx.avg) add("Aapka stop · target", `₹${fmt(ctx.avg*0.9)} · ₹${fmt(ctx.avg*1.2)} (avg ₹${fmt(ctx.avg)} se)`);
   else add("10% stop · 20% target", `₹${fmt(s.c*0.9)} · ₹${fmt(s.c*1.2)}`);
-  if (s.mc) add("Market cap", `₹${fmtInt(s.mc)} Cr · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]||""}`);
+  if (s.mcl) add("Cap size", ({L:"Large (Nifty 100)",M:"Mid (Midcap 150)",S:"Small (Smallcap 250)",Mi:"Micro (Microcap 250)"})[s.mcl]);
   if (s.ipo!=null) add("Listed", `${s.ipo} sessions ago${s.ib?" · at high since listing":""}`);
   const ch = M.periods.map(([k])=>`${k} ${sgn(s.ch[k])}`).join(" · ");
   add("Returns", ch);
@@ -2380,7 +2312,6 @@ const SORTS = [
   ["tv", "Turnover ₹", (k,s) => s && s.tv],
   ["f52", "52W high se doori", (k,s) => s && s.f52],
   ["rk", "Rank gain (kal se)", k => rankChg(k)],
-  ["mcap", "Market cap ₹ Cr", (k,s) => s && s.mc],
   ["price", "Price", (k,s) => s && px(s).c],
   ["name", "Naam A–Z", (k,s) => (s ? s.n : getIt(k).name || symOf(k)).toUpperCase()],
   ["ipod", "IPO / Shift: date", k => IPO[k] ? IPO[k][0] : null],
@@ -2509,7 +2440,7 @@ function renderWl(order){
     if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
     const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
-      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mc?` · ₹${fmtInt(s.mc)} Cr`:""}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
+      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mcl?` · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]}`:""}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms,s)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
@@ -2517,7 +2448,7 @@ function renderWl(order){
   }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">${!GS.on.size ? "Upar koi list on karo." : wlVisible.length ? "Is filter mein koi stock nahi." : "Is list mein abhi koi stock nahi. “+ Stocks add karo” kholo, ya Scanner mein kisi stock pe “+ WL” dabao."}</td></tr>`;
   $("wlinfo").textContent = list.length ? `${fmtInt(Math.min(wlLimit, list.length))} / ${fmtInt(list.length)} dikh rahe · tap karo score ka breakdown, notes aur chart ke liye` : "";
   $("wlmore").hidden = list.length <= wlLimit;
-  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), Market cap: BSE ki scrip list se (₹ Cr), Large/Mid/Small = mainboard mein rank 100/250/500 (AMFI jaisa approx), baaki Micro; jis stock ka data nahi uska khali. Mainboard Shift: pichhle 1 saal mein NSE SME se mainboard pe aaye stocks (ye IPO list mein nahi ginte). Nayi listing ka score: jis part ka data nahi (3M, 50/200 DMA, Nifty) use hata kar baaki ko 100 mein scale karte hain; 20 session se kam wale pe ~ lagta hai. IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
+  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), Cap size: NSE ki index list se - Large = Nifty 100, Mid = Midcap 150, Small = Smallcap 250, Micro = Microcap 250 (BSE-only aur in lists ke bahar wale stocks ka khali). Mainboard Shift: pichhle 1 saal mein NSE SME se mainboard pe aaye stocks (ye IPO list mein nahi ginte). Nayi listing ka score: jis part ka data nahi (3M, 50/200 DMA, Nifty) use hata kar baaki ko 100 mein scale karte hain; 20 session se kam wale pe ~ lagta hai. IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
   wlDirty = false;
   mountCharts();
 }
