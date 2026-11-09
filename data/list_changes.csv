@@ -48,6 +48,17 @@ Date,List,Change,Symbol,Exchange,Key,Reason
 2026-11-06,BSE SME,added,VANTABIO,BSE,B_540729,
 2026-11-06,BSE SME,added,VECTRAS,BSE,B_545020,
 2026-11-06,BSE SME,added,VEDANTASSET,BSE,B_543623,
+2026-11-06,IPO,removed,ANNAPURNA,NSE,N_ANNAPURNA,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,ARHAM,NSE,N_ARHAM,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,DOLLEX,NSE,N_DOLLEX,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,GICL,NSE,N_GICL,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,KNAGRI,NSE,N_KNAGRI,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,KOTYARK,NSE,N_KOTYARK,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,KRISHNADEF,NSE,N_KRISHNADEF,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,LEMERITE,NSE,N_LEMERITE,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,QMSMEDI,NSE,N_QMSMEDI,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,SWARAJ,NSE,N_SWARAJ,SME se aaya tha - Mainboard Shift list mein
+2026-11-06,IPO,removed,VITAL,NSE,N_VITAL,SME se aaya tha - Mainboard Shift list mein
 2026-11-06,Mainboard Shift,added,ANNAPURNA,NSE,N_ANNAPURNA,
 2026-11-06,Mainboard Shift,added,ARHAM,NSE,N_ARHAM,
 2026-11-06,Mainboard Shift,added,BAHETI,NSE,N_BAHETI,
