@@ -609,6 +609,7 @@ def main():
 
     print("Cap class…")
     add_mcap(stocks, index_members)
+    probe_yf()
 
     print("Fixed lists…")
     fixed, ipo_info = build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list, charts)
@@ -1003,6 +1004,39 @@ def add_mcap(stocks, index_members):
                 n += 1
                 break
     print(f"  cap class: {n} stocks")
+
+
+def probe_yf():
+    """PROBE ONLY (nothing shown in the app): can Yahoo Finance give market cap from the runner? -> data/yf_probe.json"""
+    import subprocess
+    out = {"ok": False}
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "yfinance"], check=True, timeout=240)
+        import yfinance as yf
+        syms = ["RELIANCE", "TCS", "HDFCBANK", "INFY", "SHREEREF", "MOREPENLAB", "STLTECH", "BAJAJHCARE",
+                "E2E", "SHILPAMED", "MONEYVIEW", "DELAPLEX", "AZAD", "SAHANA", "VIVIDEL"]
+        res = {}
+        for s in syms:
+            r = {}
+            for suf in (".NS", ".BO"):
+                try:
+                    fi = yf.Ticker(s + suf).fast_info
+                    mc = fi["marketCap"]
+                    if mc:
+                        r = {"src": s + suf, "mcap_cr": round(mc / 1e7, 1), "last": round(float(fi["lastPrice"]), 2)}
+                        break
+                except Exception as e:
+                    r = {"err": str(e)[:80]}
+            res[s] = r
+            time.sleep(0.5)
+        out = {"ok": True, "res": res}
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    try:
+        json.dump(out, open(os.path.join(DATA_DIR, "yf_probe.json"), "w"), indent=1)
+    except OSError:
+        pass
+    print("  yf probe:", "ok" if out.get("ok") else out.get("error"))
 
 
 def chart_id(ex, r):
