@@ -1032,6 +1032,18 @@ def load_nse_mcap(latest_day):
     return {}
 
 
+def load_bse_shares():
+    """data/bse_shares.csv (refreshed weekly from BSE's site through the owner's browser) -> {BSE code: (shares, close used, as-of)}."""
+    out = {}
+    try:
+        with open(os.path.join(HERE, "data", "bse_shares.csv"), newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                out[r["BSE_Code"]] = (float(r["Shares"]), float(r["Close_Used"]), r["AsOf"])
+    except (OSError, ValueError, KeyError):
+        pass
+    return out
+
+
 def add_mcap(stocks, index_members, latest_day):
     """s['mc'] = market cap Rs Cr (NSE's own file). s['mcl'] = L / M / S / Mi by rank among NSE mainboard stocks
     (top 100 / 101-250 / 251-500 / rest). If the file is missing, s['mcl'] falls back to NSE index lists
@@ -1041,6 +1053,17 @@ def add_mcap(stocks, index_members, latest_day):
         if s["x"] == "N" and s["s"] in mc:
             v = mc[s["s"]][0]
             s["mc"] = round(v) if v >= 100 else round(v, 1)
+    sh, hid = load_bse_shares(), 0
+    for s in stocks:      # BSE-only stocks: weekly share count x today's close
+        if s["x"] == "B" and s.get("code") in sh and s["c"] > 0:
+            n_sh, c0, _ = sh[s["code"]]
+            if not 0.55 <= s["c"] / c0 <= 1.8:      # price jumped / halved since the share count was taken: split / bonus? skip until refreshed
+                hid += 1
+                continue
+            v = n_sh * s["c"] / 1e7
+            s["mc"] = round(v) if v >= 100 else round(v, 1)
+    if sh:
+        print(f"  BSE-only market cap: {sum(1 for s in stocks if s['x'] == 'B' and s.get('mc'))} stocks (hidden for price jump: {hid})")
     main = sorted((s for s in stocks if s.get("mc") and s["seg"] == "NSE"), key=lambda s: -s["mc"])
     if main:
         for i, s in enumerate(main):
@@ -2506,7 +2529,7 @@ function renderWl(order){
   }).join("") || `<tr><td colspan="${NC}" class="l na" style="padding:24px">${!GS.on.size ? "Upar koi list on karo." : wlVisible.length ? "Is filter mein koi stock nahi." : "Is list mein abhi koi stock nahi. “+ Stocks add karo” kholo, ya Scanner mein kisi stock pe “+ WL” dabao."}</td></tr>`;
   $("wlinfo").textContent = list.length ? `${fmtInt(Math.min(wlLimit, list.length))} / ${fmtInt(list.length)} dikh rahe · tap karo score ka breakdown, notes aur chart ke liye` : "";
   $("wlmore").hidden = list.length <= wlLimit;
-  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), Market cap: NSE ki apni daily market-cap file se (₹ Cr, sirf NSE stocks; BSE-only ka khali). Cap size = NSE mainboard mein market cap rank: Large top 100, Mid 101–250, Small 251–500, Micro baaki (SME mein tag nahi). File na mile to NSE index lists se. Mainboard Shift: pichhle 1 saal mein NSE SME se mainboard pe aaye stocks (ye IPO list mein nahi ginte). Nayi listing ka score: jis part ka data nahi (3M, 50/200 DMA, Nifty) use hata kar baaki ko 100 mein scale karte hain; 20 session se kam wale pe ~ lagta hai. IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
+  $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), Market cap (₹ Cr): NSE stocks ka NSE ki apni daily file se; BSE-only stocks ka BSE ke shares (hafte mein ek baar) × aaj ka close se (split/bonus ke baad refresh tak khali ho sakta hai; BSE-only ko cap size tag nahi). Cap size = NSE mainboard mein market cap rank: Large top 100, Mid 101–250, Small 251–500, Micro baaki (SME mein tag nahi). File na mile to NSE index lists se. Mainboard Shift: pichhle 1 saal mein NSE SME se mainboard pe aaye stocks (ye IPO list mein nahi ginte). Nayi listing ka score: jis part ka data nahi (3M, 50/200 DMA, Nifty) use hata kar baaki ko 100 mein scale karte hain; 20 session se kam wale pe ~ lagta hai. IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
   wlDirty = false;
   mountCharts();
 }
