@@ -609,7 +609,6 @@ def main():
 
     print("Cap class…")
     add_mcap(stocks, index_members, latest_day)
-    probe_bse(latest_day)
 
     print("Fixed lists…")
     fixed, ipo_info = build_fixed(latest_day, sessions, nse_days, bse_days, index_members, fo_list, charts)
@@ -989,51 +988,6 @@ def track_changes(fixed, ipo_info, latest_day, nse_days, bse_days):
 
 CAP_INDICES = [("L", "Nifty 100"), ("M", "Nifty Midcap 150"), ("S", "Nifty Smallcap 250"), ("Mi", "Nifty Microcap 250")]
 MCAP_ANCHORS = {"RELIANCE": (6e5, 5e6), "TCS": (3e5, 2.5e6)}      # sanity range, Rs Cr
-
-
-def probe_bse(d):
-    """PROBE ONLY (nothing shown in the app): which BSE links give shares / market cap from the runner? -> data/bse_probe.json"""
-    dm = f"{d:%d%m%y}"
-    api = "https://api.bseindia.com/BseIndiaAPI/api/"
-    urls = [
-        api + "ListofScripData/w?Group=&Scripcode=&industry=&segment=Equity&status=Active",
-        api + "ListofScripData/w?Group=&Scripcode=&industry=&segment=Equity&status=",
-        api + "getScripHeaderData/w?Debtflag=&scripcode=500325&seriesid=",
-        api + "getScripHeaderData/w?Debtflag=&scripcode=532540&seriesid=",
-        api + "getScripHeaderData/w?Debtflag=&scripcode=543320&seriesid=",
-        api + "ComHeader/w?quotetype=EQ&scripcode=500325&seriesid=",
-        api + "StockTrading/w?flag=&quotetype=EQ&scripcode=500325",
-        "https://www.bseindia.com/corporates/List_Scrips.aspx",
-        f"https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_{dm}.zip",
-        f"https://www.bseindia.com/download/BhavCopy/Equity/EQ{dm}_CSV.ZIP",
-        "https://www.bseindia.com/download/BhavCopy/Equity/" + f"BhavCopy_BSE_CM_0_0_0_{d:%Y%m%d}_F_0000.CSV",
-        "https://www.amfiindia.com/research-information/other-data/categorization-of-stocks",
-    ]
-    out = {}
-    for u in urls:
-        r = {}
-        try:
-            if "bseindia" in u:
-                prime_cookies("https://www.bseindia.com/")
-            resp = session.get(u, timeout=30, headers=BSE_HEADERS if "bseindia" in u else None)
-            raw = resp.content or b""
-            r = {"status": resp.status_code, "type": resp.headers.get("content-type", "")[:60], "bytes": len(raw)}
-            if u.endswith((".zip", ".ZIP")) and resp.status_code == 200:
-                z = zipfile.ZipFile(io.BytesIO(raw))
-                r["files"] = z.namelist()[:10]
-                r["head"] = z.read(z.namelist()[0]).decode("latin-1").splitlines()[:3]
-            else:
-                r["head"] = raw[:500].decode("latin-1", "replace").splitlines()[:8]
-            if "amfiindia" in u:
-                r["xlsx_links"] = re.findall(r'href="([^"]+\.xlsx?)"', resp.text)[:10]
-        except Exception as e:
-            r["err"] = str(e)[:150]
-        out[u] = r
-    try:
-        json.dump(out, open(os.path.join(DATA_DIR, "bse_probe.json"), "w"), indent=1)
-    except OSError:
-        pass
-    print("  bse probe:", {k.split("/")[-1][:30]: v.get("status", v.get("err")) for k, v in out.items()})
 
 
 def load_nse_mcap(latest_day):
