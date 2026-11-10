@@ -1,0 +1,152 @@
+{
+ "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w?Group=&Scripcode=&industry=&segment=Equity&status=Active": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 418,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;ListofScripData&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;8c2b2117&#46;1794327773&#46;b36a261",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;8c2b2117&#46;1794327773&#46;b36a261</P>"
+  ]
+ },
+ "https://api.bseindia.com/BseIndiaAPI/api/ListofScripData/w?Group=&Scripcode=&industry=&segment=Equity&status=": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 418,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;ListofScripData&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;8c2b2117&#46;1794327773&#46;b36a2bd",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;8c2b2117&#46;1794327773&#46;b36a2bd</P>"
+  ]
+ },
+ "https://api.bseindia.com/BseIndiaAPI/api/getScripHeaderData/w?Debtflag=&scripcode=500325&seriesid=": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 421,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;getScripHeaderData&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;8c2b2117&#46;1794327773&#46;b36a322",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;8c2b2117&#46;1794327773&#46;b36a322</P>"
+  ]
+ },
+ "https://api.bseindia.com/BseIndiaAPI/api/getScripHeaderData/w?Debtflag=&scripcode=532540&seriesid=": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 423,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;getScripHeaderData&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;992b2117&#46;1794327774&#46;234cf1fe",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;992b2117&#46;1794327774&#46;234cf1fe</P>"
+  ]
+ },
+ "https://api.bseindia.com/BseIndiaAPI/api/getScripHeaderData/w?Debtflag=&scripcode=543320&seriesid=": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 423,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;getScripHeaderData&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;992b2117&#46;1794327774&#46;234cf263",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;992b2117&#46;1794327774&#46;234cf263</P>"
+  ]
+ },
+ "https://api.bseindia.com/BseIndiaAPI/api/ComHeader/w?quotetype=EQ&scripcode=500325&seriesid=": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 412,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;ComHeader&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;8c2b2117&#46;1794327774&#46;b36a471",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;8c2b2117&#46;1794327774&#46;b36a471</P>"
+  ]
+ },
+ "https://api.bseindia.com/BseIndiaAPI/api/StockTrading/w?flag=&quotetype=EQ&scripcode=500325": {
+  "status": 403,
+  "type": "text/html",
+  "bytes": 415,
+  "head": [
+   "<HTML><HEAD>",
+   "<TITLE>Access Denied</TITLE>",
+   "</HEAD><BODY>",
+   "<H1>Access Denied</H1>",
+   " ",
+   "You don't have permission to access \"http&#58;&#47;&#47;api&#46;bseindia&#46;com&#47;BseIndiaAPI&#47;api&#47;StockTrading&#47;w&#63;\" on this server.<P>",
+   "Reference&#32;&#35;18&#46;8c2b2117&#46;1794327774&#46;b36a4e2",
+   "<P>https&#58;&#47;&#47;errors&#46;edgesuite&#46;net&#47;18&#46;8c2b2117&#46;1794327774&#46;b36a4e2</P>"
+  ]
+ },
+ "https://www.bseindia.com/corporates/List_Scrips.aspx": {
+  "status": 200,
+  "type": "text/html",
+  "bytes": 16912,
+  "head": [
+   "<!DOCTYPE html><html lang=\"en\" data-critters-container=\"\"><head>",
+   "    <meta charset=\"utf-8\">",
+   "    <title>",
+   "      LIVE Stock/Share Market | Indian Stock/Share Market LIVE | BSE SENSEX | BSE (formerly Bombay Stock",
+   "      Exchange)",
+   "    </title>",
+   "    <meta name=\"description\" content=\"BSE SENSEX - India's Index the World Tracks. Get live BSE SENSEX quotes. BSE Sensex Heat Map a great tool to track BSE SENSEX stocks. Gainers, losers, volume toppers in BSE SENSEX Stocks. Corporate announcements of BSE SENSE"
+  ]
+ },
+ "https://www.bseindia.com/download/BhavCopy/Equity/EQ_ISINCODE_091126.zip": {
+  "status": 200,
+  "type": "text/html",
+  "bytes": 16912,
+  "err": "File is not a zip file"
+ },
+ "https://www.bseindia.com/download/BhavCopy/Equity/EQ091126_CSV.ZIP": {
+  "status": 200,
+  "type": "text/html",
+  "bytes": 16912,
+  "err": "File is not a zip file"
+ },
+ "https://www.bseindia.com/download/BhavCopy/Equity/BhavCopy_BSE_CM_0_0_0_20261109_F_0000.CSV": {
+  "status": 200,
+  "type": "application/octet-stream",
+  "bytes": 871332,
+  "head": [
+   "TradDt,BizDt,Sgmt,Src,FinInstrmTp,FinInstrmId,ISIN,TckrSymb,SctySrs,XpryDt,FininstrmActlXpryDt,StrkPric,OptnTp,FinInstrmNm,OpnPric,HghPric,LwPric,ClsPric,LastPric,PrvsClsgPric,UndrlygPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,TtlTrfVal,TtlNbOfTxsExctd,SsnId,NewBrdLotQty,Rmks,Rsvd1,Rsvd2,Rsvd3,Rsvd4",
+   "2026-11-09,2026-11-09,CM,BSE,STK,500002,INE117A01022,ABB,A,,,,,ABB INDIA LIMITED,6854.10,6990.35,6674.55,6936.65,6936.65,6875.00,,6915.04,,,22404,154027878.00,3864,F1,1,,,,,",
+   "2026-11-09,202"
+  ]
+ },
+ "https://www.amfiindia.com/research-information/other-data/categorization-of-stocks": {
+  "status": 404,
+  "type": "text/html; charset=utf-8",
+  "bytes": 159632,
+  "head": [
+   "<!DOCTYPE html><html lang=\"en\" data-theme=\"light\"><head><meta charSet=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><link rel=\"stylesheet\" href=\"/_next/static/css/d0eedd213fd3a92d.css\" data-precedence=\"next\"/><link rel=\"stylesheet\" href=\"/_next/static/css/43d2a2653bb0d972.css\" data-precedence=\"next\"/><link rel=\"preload\" as=\"script\" fetchPriority=\"low\" href=\"/_next/static/chunks/webpack-1b6b64eff7ee63b1.js\"/><script src=\"/_next/static/chunks/4bd1b696-100b9d70ed4e49"
+  ],
+  "xlsx_links": []
+ }
+}
