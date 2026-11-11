@@ -1470,7 +1470,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
     <div class="row"><input type="search" id="rsq" placeholder="Search company, symbol, thesis, red flags…"></div>
     <div class="row"><select id="rssec" aria-label="Sector"></select>
       <select id="rsage" aria-label="Research date"><option value="">Sab dates</option><option value="30">Pichhle 30 din</option><option value="90">Pichhle 90 din</option><option value="old">Purane (60+ din)</option></select>
-      <select id="rssort" aria-label="Sort"><option value="date">Naya research pehle</option><option value="ret">Return — zyada pehle</option><option value="retl">Return — kam pehle</option><option value="name">Naam A–Z</option></select></div>
+      <select id="rssort" aria-label="Sort"><option value="date">Naya research pehle</option><option value="ret">Return — zyada pehle</option><option value="retl">Return — kam pehle</option><option value="score">Momentum score</option><option value="name">Naam A–Z</option></select></div>
   </div>
   <div id="rslist"></div>
   <div class="foot" id="rsfoot"></div>
@@ -3189,6 +3189,7 @@ function rsRender(){
   const list = base.filter(r => !rsF.size || rsF.has(vOf(r)));
   const so = $("rssort").value, rv = r => r.ret == null ? null : r.ret;
   list.sort(so === "name" ? (a, b) => a.company.localeCompare(b.company)
+    : so === "score" ? (a, b) => ((b.s && b.s.ms) ?? -1) - ((a.s && a.s.ms) ?? -1) || a.company.localeCompare(b.company)
     : so === "ret" || so === "retl" ? (a, b) => { const x = rv(a), y = rv(b); if (x == null) return y == null ? 0 : 1; if (y == null) return -1; return so === "ret" ? y - x : x - y; }
     : (a, b) => String(b.date).localeCompare(String(a.date)) || a.company.localeCompare(b.company));
   let html;
