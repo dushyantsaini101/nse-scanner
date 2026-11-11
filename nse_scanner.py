@@ -1383,10 +1383,11 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
 <div id="undo" hidden><span id="undomsg"></span><button class="btn sm" id="undobtn">Undo</button></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
-<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="wl">Watchlist</button><button data-v="pf">Portfolio</button></nav></header>
-<div class="wrap" id="v-wl" hidden>
+<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="pf">Portfolio</button></nav></header>
+<div class="wrap" id="v-top" style="padding-bottom:0" hidden>
   <div class="panel">
-    <div class="row" style="justify-content:space-between;align-items:center"><b>Watchlist</b><span class="sub" id="wlsync"></span></div>
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Scanner</b><span class="sub" id="wlsync"></span></div>
+    <div class="chips" id="scmode" style="margin-top:10px"></div>
     <div class="mlab">Fixed lists <small>· roz apne aap update · jo dekhna hai on karo</small></div>
     <div class="chips" id="wlmodeF"></div>
     <div class="mlab">Meri lists</div>
@@ -1395,7 +1396,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
       <div class="row"><label class="l">Kis list mein?<select id="wltarget"></select></label></div>
       <div class="row"><input type="search" id="wlfind" placeholder="Naam ya symbol likho… jaise sterlite, tata, hdfc bank, 500325" autocomplete="off" spellcheck="false"></div>
       <div class="sugs" id="wlsug" hidden></div>
-      <div class="hint">Ya bahut saare ek saath: symbols ya company ke naam paste karo, kisi bhi format mein: <b>RELIANCE, NSE:TCS, BSE:500325</b>. Comma, space ya nayi line se alag karo (naam ho to comma ya nayi line se, jaise <b>tata steel, hdfc bank</b>). Scanner tab mein har stock pe <b>+ WL</b> button bhi hai. Har list mein 1000 tak stocks.</div>
+      <div class="hint">Ya bahut saare ek saath: symbols ya company ke naam paste karo, kisi bhi format mein: <b>RELIANCE, NSE:TCS, BSE:500325</b>. Comma, space ya nayi line se alag karo (naam ho to comma ya nayi line se, jaise <b>tata steel, hdfc bank</b>). <b>All stocks</b> mein har stock pe <b>+ WL</b> button bhi hai. Har list mein 1000 tak stocks.</div>
       <textarea id="wlpaste" rows="3" placeholder="RELIANCE, NSE:TCS&#10;BSE:500325"></textarea>
       <div class="row"><button class="btn" id="wlpastebtn">Add karo</button>
         <label class="btn">CSV import (Kite etc.)<input type="file" id="wlcsv" accept=".csv,.txt,text/csv" hidden></label></div>
@@ -1413,6 +1414,8 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
       <div class="row"><button class="btn" id="wlexport">Dikh rahe stocks ka CSV</button></div>
     </details>
   </div>
+</div>
+<div class="wrap" id="v-wl" hidden>
   <details class="panel chgbox" id="wlchg" hidden><summary><b>Aaj ke badlav</b> <span class="na" id="wlchgn"></span></summary><div id="wlchglist"></div></details>
   <div class="panel new20" id="wlnew" hidden><b>New in Top 20 today</b><div class="chips" id="wlnewlist" style="margin-top:8px"></div></div>
   <div class="panel">
@@ -2226,6 +2229,15 @@ function loadMode(){
   GS = {on:new Set((m && m.on) || (members("w1").length ? ["w1"] : ["n50"]))};
 }
 const saveMode = () => store.set("wl_mode3", JSON.stringify({on:[...GS.on]}));
+// Scanner tab: "All stocks" (scanner engine) or lists (watchlist engine)
+let scanAll = store.get("sc_all") !== "0";
+const saveAll = () => store.set("sc_all", scanAll ? "1" : "0");
+function scanVis(on){
+  $("v-top").hidden = !on; $("v-scan").hidden = !on || !scanAll; $("v-wl").hidden = !on || scanAll;
+  if (!on) return;
+  renderMode();
+  if (!scanAll) renderWl();
+}
 function visibleKeys(){ const out = new Set(); GS.on.forEach(id => members(id).forEach(k => out.add(k))); return [...out]; }
 
 // ---- auto tags (from today's end-of-day numbers) and my tags
@@ -2461,8 +2473,9 @@ function wlEditor(k, s){
       <div class="row"><button class="btn sm" data-wsave="${esc(k)}">Note save karo</button></div></div></div>`;
 }
 
-function chip(id, name, cnt){ return `<button class="tg${GS.on.has(id)?" on":""}" data-wmode="${id}">${esc(name)} <small>${fmtInt(cnt)}</small></button>`; }
+function chip(id, name, cnt){ return `<button class="tg${!scanAll && GS.on.has(id)?" on":""}" data-wmode="${id}">${esc(name)} <small>${fmtInt(cnt)}</small></button>`; }
 function renderMode(){
+  $("scmode").innerHTML = `<button class="tg${scanAll?" on":""}" data-wmode="all">All stocks <small>${fmtInt(S.length)}</small></button>`;
   $("wlmodeF").innerHTML = FIXED.map(([id, name]) => chip(id, name, FSET[id].size)).join("");
   $("wlmodeM").innerHTML = MYL.map(([id, name]) => chip(id, name, members(id).length)).join("") + chip("old", "Hataye gaye (Old)", members("old").length);
 }
@@ -2787,8 +2800,12 @@ document.addEventListener("click", e => {
     const row = document.querySelector(`#wlbody tr[data-wk="${CSS.escape(k)}"]`); if (row) row.scrollIntoView({block:"center"}); }
 }, true);
 const modeClick = e => { const b = e.target.closest("[data-wmode]"); if (!b) return; const g = b.dataset.wmode;
-  GS.on.has(g) ? GS.on.delete(g) : GS.on.add(g); saveMode(); wlSel.clear(); wlForce = ""; wlLimit = 100; wlRefresh(); };
-$("wlmodeF").onclick = modeClick; $("wlmodeM").onclick = modeClick;
+  wlSel.clear(); wlForce = ""; wlLimit = 100;
+  if (g === "all") { scanAll = true; }
+  else if (scanAll) { scanAll = false; GS.on = new Set([g]); }
+  else { GS.on.has(g) ? GS.on.delete(g) : GS.on.add(g); if (!GS.on.size) scanAll = true; }
+  saveMode(); saveAll(); scanVis(true); wlRefresh(); };
+$("wlmodeF").onclick = modeClick; $("wlmodeM").onclick = modeClick; $("scmode").onclick = modeClick;
 const tagClick = e => { const b = e.target.closest("[data-wtf]"); if (!b) return; const t = b.dataset.wtf; wlTags.has(t) ? wlTags.delete(t) : wlTags.add(t); wlLimit = 100; renderWl(); };
 $("wltagsA").onclick = tagClick; $("wltagsM").onclick = tagClick;
 $("wlbody").addEventListener("click", e => {
@@ -2883,7 +2900,7 @@ function sdMsg(s, empty){
 const sdNote = s => s.busy ? "load ho raha hai…" : s.err === "offline" ? "offline · purani copy" : s.err && s.err !== "NOSHEET" ? "⚠ " + esc(s.err) : "";
 document.addEventListener("click", e => {
   if (!e.target.closest("[data-goconn]")) return;
-  showView("wl"); $("wlsetup").open = true; $("wlsetup").scrollIntoView({block:"center"}); $("wlurl").focus();
+  showView("scan"); $("wlsetup").open = true; $("wlsetup").scrollIntoView({block:"center"}); $("wlurl").focus();
 });
 function fmtTime(t){
   t = String(t || "");
@@ -3054,9 +3071,10 @@ $("tglist").addEventListener("click", e => {
 });
 
 function showView(v){
+  if (v==="wl") { scanAll = false; v = "scan"; }            // old Watchlist tab now lives inside Scanner (list mode)
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
-  ["aaj","tg","scan","wl","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
-  if (v==="wl") renderWl();
+  ["aaj","tg","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
+  scanVis(v==="scan");
   if (v==="aaj") aajShow();
   if (v==="tg") tgShow();
 }
