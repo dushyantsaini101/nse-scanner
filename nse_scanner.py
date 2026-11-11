@@ -1375,6 +1375,11 @@ a.btn{text-decoration:none;display:inline-block;color:var(--acc);font-weight:600
 .tgty.b{background:var(--accbg);color:var(--acc)} .tgty.s{background:var(--ambbg);color:var(--amb)} .tgty.r{background:var(--upbg);color:var(--up)} .tgty.o{background:var(--bg);color:var(--mute);border:1px solid var(--line)}
 .rate{font-weight:700} .rate.up{color:var(--up);background:none} .rate.dn{color:var(--dn);background:none}
 details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:10px}
+.vw{font-size:11px;padding:1px 7px;border-radius:4px;font-weight:600;white-space:nowrap}
+.vw.s{background:var(--upbg);color:var(--up)} .vw.w{background:var(--bg);color:var(--mute);border:1px solid var(--line)} .vw.c{background:var(--ambbg);color:var(--amb)} .vw.r{background:var(--dnbg);color:var(--dn)}
+.rsi .hd{font-weight:500;font-size:14px} .rsi .rx{margin-top:8px;font-size:13px;line-height:1.45;color:var(--mute)} .rsi .rx b{color:var(--ink)} .rsi .rx div{margin-top:4px}
+.rsi .px{font-size:13px;color:var(--mute);margin-top:2px}
+.chip.rs{background:var(--accbg);color:var(--acc);cursor:pointer;border:0;font-size:11px;padding:1px 6px;margin-left:2px} .chip.old{background:var(--ambbg);color:var(--amb)}
 .connect{font-size:14px;line-height:1.5} .connect ol{margin:8px 0 0;padding-left:20px}
 @media (max-width:480px){.tabs button{padding:7px 10px;font-size:13px}}
 </style></head><body>
@@ -1383,7 +1388,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
 <div id="undo" hidden><span id="undomsg"></span><button class="btn sm" id="undobtn">Undo</button></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
-<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="pf">Portfolio</button></nav></header>
+<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="rs">Research</button><button data-v="pf">Portfolio</button></nav></header>
 <div class="wrap" id="v-top" style="padding-bottom:0" hidden>
   <div class="panel">
     <div class="row" style="justify-content:space-between;align-items:center"><b>Scanner</b><span class="sub" id="wlsync"></span></div>
@@ -1452,6 +1457,19 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
   </div>
   <div id="tglist"></div>
   <div class="foot" id="tgfoot"></div>
+</div>
+<div class="wrap" id="v-rs" hidden>
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Claude Research</b>
+      <span class="row" style="gap:6px;align-items:center"><span class="sub" id="rssync"></span><button class="btn sm" id="rsref" title="Sheet se dobara lao">↻</button></span></div>
+    <div class="chips" id="rschips" style="margin-top:10px"></div>
+    <div class="row"><input type="search" id="rsq" placeholder="Search company, symbol, thesis, red flags…"></div>
+    <div class="row"><select id="rssec" aria-label="Sector"></select>
+      <select id="rsage" aria-label="Research date"><option value="">Sab dates</option><option value="30">Pichhle 30 din</option><option value="90">Pichhle 90 din</option><option value="old">Purane (60+ din)</option></select>
+      <select id="rssort" aria-label="Sort"><option value="date">Naya research pehle</option><option value="ret">Return — zyada pehle</option><option value="retl">Return — kam pehle</option><option value="name">Naam A–Z</option></select></div>
+  </div>
+  <div id="rslist"></div>
+  <div class="foot" id="rsfoot"></div>
 </div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
@@ -1888,6 +1906,7 @@ function render(){
     if (s.dv && s.dv.st==="bo") tags += ` <span class="chip bo">Breakout</span>`;
     const held = HELD.get(s.k);
     if (held) tags += ` <span class="chip hold">Holding</span>`;
+    tags += rsBadge(s.k);
     tags += wlBtn(s.k);
     const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
       <td>${fmt(s.c)}</td>
@@ -2534,7 +2553,7 @@ function renderWl(order){
     if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
     const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
-      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mc?` · ₹${fmtInt(s.mc)} Cr`:(s.mcl?` · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]}`:"")}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
+      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${rsBadge(k)}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mc?` · ₹${fmtInt(s.mc)} Cr`:(s.mcl?` · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]}`:"")}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms,s)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
@@ -3070,19 +3089,138 @@ $("tglist").addEventListener("click", e => {
   const c = e.target.closest(".tgi[data-tgl]"); if (c && !String(window.getSelection() || "")) window.open(c.dataset.tgl, "_blank", "noopener");
 });
 
+// ---- Claude Research tab: rows from the "Research" tab of the Sheet (Claude adds/updates a row after every
+// stock research chat). Private data: only via the Apps Script with the key, never in this public repo.
+const RSV = [["Strong case","s"],["Watch","w"],["Cautious","c"],["Red flags","r"]];
+const rsCls = v => (RSV.find(x => x[0].toLowerCase() === String(v || "").trim().toLowerCase()) || [0, "w"])[1];
+const rsF = new Set(jget("rs_f", []).filter(f => RSV.some(x => x[0] === f)));
+const rsOpen = new Set(), RSP = new Map(), rsQ = [];
+let rsQs = "", RSK = new Map(), rsRun = 0, rsT = 0;
+const rsId = r => r.nse || r.bse || r.company;
+const rsAge = d => { const t = Date.parse(String(d || "").slice(0, 10) + "T00:00:00Z"); return isNaN(t) ? null : Math.round((Date.parse(istToday() + "T00:00:00Z") - t) / 864e5); };
+const rsStock = r => (r.nse && resolveToken("NSE:" + r.nse)) || (r.bse && resolveToken(r.bse)) || null;
+function rsIndex(){
+  RSK = new Map();
+  const s = sdState("rs");
+  ((s.data && s.data.research) || []).forEach(r => { const st = rsStock(r); if (!st) return;
+    const o = RSK.get(st.k); if (!o || String(r.date) > String(o.date)) RSK.set(st.k, r); });
+}
+const rsBadge = k => RSK.has(k) ? ` <button class="chip rs" data-rs="${esc(k)}" title="Claude ne research kiya — Research tab mein dekho">📚</button>` : "";
+const rsLater = () => { clearTimeout(rsT); rsT = setTimeout(() => { if (!$("v-rs").hidden) rsRender(); }, 200); };
+// close on the research date from the stock's own chart file (split/bonus adjusted, same as today's close)
+function rsPx(r){
+  if (r.price) return {p: r.price, own: true};
+  const d0 = String(r.date || "").slice(0, 10), key = r.s.k + "|" + d0;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d0)) return {p: null};
+  if (RSP.has(key)) return RSP.get(key);
+  RSP.set(key, null); rsQ.push([r.s.k, d0, key]); rsPump();
+  return null;
+}
+function rsPump(){
+  while (rsRun < 4 && rsQ.length) {
+    const [k, d0, key] = rsQ.shift(); rsRun++;
+    getCandles(k).then(c => {
+      let p = null;
+      for (let i = 0; i < c.d.length; i++) { if (dayStr(c.d[i]) <= d0) p = c.c[i]; else break; }
+      RSP.set(key, {p, pre: p == null});
+    }).catch(() => RSP.set(key, {p: null})).finally(() => { rsRun--; rsPump(); rsLater(); });
+  }
+}
+async function rsShow(force){
+  const p = sdLoad("rs", "research", force);
+  rsRender(); await p; rsIndex(); rsRender();
+}
+function rsItem(r){
+  const id = rsId(r), op = rsOpen.has(id), cls = rsCls(r.view);
+  const sym = r.s ? `<button class="tg" data-tk="${esc(r.s.k)}" title="Scanner mein dekho"><b>${esc(r.s.s)}</b>${scoreChip(r.s.ms, r.s)}</button>`
+    : (r.nse || r.bse ? `<span class="tg">${esc(r.nse || r.bse)}</span>` : "");
+  let pxl;
+  if (!r.s) pxl = "Scanner mein ye stock nahi mila — return nahi dikh sakta";
+  else if (r.pp === null) pxl = `Research ke din ka price nikal rahe hain… · Aaj ₹${fmt(r.c)}`;
+  else if (r.pp.p == null) pxl = `${r.pp.pre ? "Research date scanner history se pehle ki hai" : "Us din ka price nahi mila"} · Aaj ₹${fmt(r.c)}`;
+  else pxl = `Research ke din ₹${fmt(r.pp.p)} → aaj ₹${fmt(r.c)} · <b style="color:${chgCol(r.ret)}">${r.ret > 0 ? "+" : ""}${fmt(r.ret, 1)}%</b>`;
+  const link = safeUrl(r.link);
+  return `<div class="tgi rsi" data-rsi="${esc(id)}">`
+    + `<div class="th"><span class="vw ${cls}">${esc(r.view || "—")}</span><b>${esc(r.company)}</b>${sym}`
+    + `${r.age != null && r.age > 60 ? `<span class="chip old">Purana ho gaya</span>` : ""}`
+    + `<span class="tt">${esc(fdIso(String(r.date).slice(0, 10)))}${r.sector ? " · " + esc(r.sector) : ""}${r.listing ? " · " + esc(r.listing) : ""}</span></div>`
+    + `<div class="hd">${esc(r.thesis || "—")}</div><div class="px">${pxl}</div>`
+    + (op ? `<div class="rx"><div><b>Red flags:</b> ${esc(r.redFlags || "—")}</div><div><b>Watch next:</b> ${esc(r.watchNext || "—")}</div></div>`
+        + `<div class="acts">${link ? `<a class="btn sm" href="${esc(link)}" target="_blank" rel="noopener noreferrer">Claude chat kholo ↗</a>` : ""}`
+        + `${r.s ? `<button class="btn sm" data-tk="${esc(r.s.k)}">Scanner mein dekho</button>` : ""}</div>`
+      : `<div class="px" style="margin-top:4px">Tap karo: red flags, watch next, chat link</div>`)
+    + `</div>`;
+}
+function rsRender(){
+  const s = sdState("rs");
+  const all = ((s.data && s.data.research) || []).map(r0 => {
+    const r = Object.assign({}, r0); r.s = rsStock(r); r.age = rsAge(r.date);
+    if (r.s) { r.c = px(r.s).c; r.pp = rsPx(r); r.ret = r.pp && r.pp.p && r.c ? (r.c / r.pp.p - 1) * 100 : null; }
+    return r;
+  });
+  const secs = [...new Set(all.map(r => r.sector).filter(Boolean))].sort();
+  const sv = $("rssec").value;
+  $("rssec").innerHTML = `<option value="">Sab sectors</option>` + secs.map(x => `<option>${esc(x)}</option>`).join("");
+  $("rssec").value = secs.includes(sv) ? sv : "";
+  const q = rsQs.trim().toUpperCase(), sec = $("rssec").value, ag = $("rsage").value;
+  const base = all.filter(r => (!sec || r.sector === sec)
+    && (!ag || (ag === "old" ? r.age != null && r.age > 60 : r.age != null && r.age <= +ag))
+    && (!q || [r.company, r.nse, r.bse, r.sector, r.thesis, r.redFlags, r.watchNext, r.listing].some(v => String(v || "").toUpperCase().includes(q))
+        || (r.s && (r.s.s.toUpperCase().includes(q) || r.s.n.toUpperCase().includes(q)))));
+  const vOf = r => (RSV.find(x => x[1] === rsCls(r.view)) || [""])[0];
+  $("rschips").innerHTML = RSV.map(([v, c]) => `<button class="tg${rsF.has(v) ? " on" : ""}" data-rsf="${esc(v)}"><span class="vw ${c}">${esc(v)}</span> <small>${base.filter(r => vOf(r) === v).length}</small></button>`).join("");
+  const list = base.filter(r => !rsF.size || rsF.has(vOf(r)));
+  const so = $("rssort").value, rv = r => r.ret == null ? null : r.ret;
+  list.sort(so === "name" ? (a, b) => a.company.localeCompare(b.company)
+    : so === "ret" || so === "retl" ? (a, b) => { const x = rv(a), y = rv(b); if (x == null) return y == null ? 0 : 1; if (y == null) return -1; return so === "ret" ? y - x : x - y; }
+    : (a, b) => String(b.date).localeCompare(String(a.date)) || a.company.localeCompare(b.company));
+  let html;
+  if (!all.length) html = `<div class="panel">${s.err && /unknown action/i.test(s.err)
+    ? `<div class="err">⚠ Sheet ka Apps Script purana hai. Repo ka naya <b>apps_script/Code.gs</b> (version 5) paste karo → Deploy → Manage deployments → ✏️ → New version → Deploy.</div>`
+    : sdMsg(s, "Sheet ke <b>Research</b> tab mein abhi koi row nahi hai.")}</div>`;
+  else if (!list.length) html = `<div class="panel na">Is filter mein kuch nahi. Chip hatao ya search khali karo.</div>`;
+  else html = list.map(rsItem).join("");
+  $("rslist").innerHTML = html;
+  const note = sdNote(s), last = all.reduce((m, r) => String(r.updated || r.date) > m ? String(r.updated || r.date) : m, "");
+  $("rssync").innerHTML = (all.length ? `${list.length} / ${all.length} stocks` + (last ? " · update: " + esc(fdIso(last.slice(0, 10))) : "") : "") + (note ? " · " + note : "");
+  $("rsfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Research</b> tab se aata hai (public repo mein nahi); har stock research chat ke end mein Claude row add/update karta hai. Return = latest close (${esc(M.asOf)}) ÷ research date ka close (split/bonus adjusted), ya Sheet mein likha price. 60 din se purana research = <b>Purana ho gaya</b>. Scanner mein 📚 = is stock ka research hai. "View" research ka read hai, buy/sell call nahi. Not investment advice.`;
+}
+$("rschips").onclick = e => { const b = e.target.closest("[data-rsf]"); if (!b) return; const f = b.dataset.rsf;
+  rsF.has(f) ? rsF.delete(f) : rsF.add(f); store.set("rs_f", JSON.stringify([...rsF])); rsRender(); };
+$("rsq").addEventListener("input", e => { rsQs = e.target.value; rsRender(); });
+["rssec", "rsage", "rssort"].forEach(id => $(id).addEventListener("input", () => rsRender()));
+$("rsref").onclick = () => rsShow(true);
+$("rslist").addEventListener("click", e => {
+  if (e.target.closest("a,button,input,select") || String(window.getSelection() || "")) return;
+  const c = e.target.closest(".rsi[data-rsi]"); if (!c) return;
+  const id = c.dataset.rsi; rsOpen.has(id) ? rsOpen.delete(id) : rsOpen.add(id); rsRender();
+});
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-rs]"); if (!b) return;
+  e.stopPropagation(); e.preventDefault();
+  const k = b.dataset.rs, st = BYK.get(k), r = RSK.get(k);
+  rsQs = st ? st.s : ""; $("rsq").value = rsQs; rsF.clear(); store.set("rs_f", "[]");
+  $("rsage").value = ""; $("rssec").value = "";
+  if (r) rsOpen.add(rsId(r));
+  showView("rs"); window.scrollTo(0, 0);
+}, true);
+
 function showView(v){
   if (v==="wl") { scanAll = false; v = "scan"; }            // old Watchlist tab now lives inside Scanner (list mode)
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
-  ["aaj","tg","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
+  ["aaj","tg","rs","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
   scanVis(v==="scan");
   if (v==="aaj") aajShow();
   if (v==="tg") tgShow();
+  if (v==="rs") rsShow();
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
+rsIndex();
 wlInit();
 render();
 showView("aaj");
+sdLoad("rs", "research").then(() => { const sig = () => [...RSK.keys()].join(","), was = sig(); rsIndex(); if (sig() !== was) { render(); wlRefresh(); } });
 $("fsclose").onclick = closeFull;
 document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("fs").hidden) closeFull(); });
 loadPortfolio().then(() => { if (!$("v-tg").hidden) tgRender(); if (location.hash.startsWith("#c=")) openFull(decodeURIComponent(location.hash.slice(3))); });

@@ -1,11 +1,12 @@
 /**
- * Backend for the Stock Scanner app (GitHub Pages)  — version 4
+ * Backend for the Stock Scanner app (GitHub Pages)  — version 5
  * Everything private lives only in this Google Sheet / your Google Drive (never in the public GitHub repo):
  *   - "Watchlist" tab     : one row per stock — Watchlist 1-5 membership, notes, tags, Old-list removals
  *   - "Rank history" tab  : daily rank of each stock inside Watchlist 1-5
  *   - "Briefs" tab        : Trading Briefs (A Date, B Type, C Verdict, D Brief markdown; newest in row 2) — read only
  *   - "Telegram" tab      : posts saved by the Telegram bot (action "telegram_add"); files go to the Drive folder
  *                           "Telegram Reports (bot)". Rows and files older than 30 days are deleted every night.
+ *   - "Research" tab      : one row per stock researched in Claude chats (Claude adds/updates rows) — read only here
  *   - holdings            : read only from the sheet "My Holdings (auto-updated)" (never written to)
  *
  * Setup (details in README.md):
@@ -20,14 +21,16 @@
  *   GET  ?key=…                      Watchlist items          GET ?key=…&hist=N_TCS   rank history of one stock
  *   GET  ?key=…&action=briefs        last 7 Trading Briefs    GET ?key=…&action=telegram   last 7 days of posts
  *   GET  ?key=…&action=holdings      symbols with quantity > 0
+ *   GET  ?key=…&action=research      all rows of the Research tab
  *   POST {"key":…, "ops":[…]}        Watchlist changes        POST {"key":…, "action":"telegram_add", "rows":[…]}
  */
 
-const VERSION = 4;
+const VERSION = 5;
 const TAB = 'Watchlist';
 const HIST = 'Rank history';
 const BRIEFS = 'Briefs';
 const TG = 'Telegram';
+const RESEARCH = 'Research';
 const HEAD = ['Key', 'Symbol', 'Exchange', 'Name', 'Added', 'Tags', 'Notes', 'Updated', 'Watchlists', 'Old list removed till'];
 const HIST_HEAD = ['Date', 'List', 'Rank', 'Symbol', 'Key', 'Score'];
 const TG_HEAD = ['Time (IST)', 'Channel', 'Type', 'Stocks', 'Research house', 'Rating', 'Target ₹', 'Headline',
@@ -86,6 +89,10 @@ function doGet(e) {
     if (act === 'telegram') {
       const days = Math.min(Math.max(Number(p.days) || 7, 1), TG_KEEP_DAYS);
       return out_({ok: true, version: VERSION, days: days, telegram: readTelegram_(days), updated: tgLastTime_()});
+    }
+    if (act === 'research') {
+      const rows = readResearch_();
+      return out_({ok: true, version: VERSION, count: rows.length, research: rows});
     }
     if (act === 'holdings') {
       const h = readHoldings_();
@@ -435,6 +442,25 @@ function num_(v) {
   if (v == null || v === '') return null;
   const n = Number(String(v).replace(/[₹,\s]/g, '').replace(/^rs\.?/i, ''));
   return isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
+// ---------------------------------------------------------------- Research tab (read only; Claude fills it)
+// Columns by header name: Company, NSE symbol, BSE code, Sector, Listing, View, Thesis, Red flags, Watch next,
+// Research date, Price on research date, Chat link, Updated on
+function readResearch_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(RESEARCH);
+  if (!sh || sh.getLastRow() < 2) return [];
+  const v = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
+  const H = v[0].map(h => String(h).trim().toLowerCase());
+  const col = name => H.indexOf(name);
+  const c = {co: col('company'), nse: col('nse symbol'), bse: col('bse code'), sec: col('sector'), lst: col('listing'),
+             view: col('view'), th: col('thesis'), rf: col('red flags'), wn: col('watch next'), d: col('research date'),
+             p: col('price on research date'), link: col('chat link'), up: col('updated on')};
+  const g = (r, i) => i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim();
+  return v.slice(1).filter(r => g(r, c.co)).map(r => ({
+    company: g(r, c.co), nse: g(r, c.nse).toUpperCase(), bse: g(r, c.bse), sector: g(r, c.sec), listing: g(r, c.lst),
+    view: g(r, c.view), thesis: g(r, c.th), redFlags: g(r, c.rf), watchNext: g(r, c.wn), date: g(r, c.d),
+    price: num_(g(r, c.p)), link: g(r, c.link), updated: g(r, c.up)}));
 }
 
 // ---------------------------------------------------------------- holdings (read only)
