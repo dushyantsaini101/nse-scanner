@@ -326,6 +326,13 @@ def split_factor(last, o, c, prev, consecutive):
     return None
 
 
+def avg_turnover(recs, today_val, n=20):
+    """Average daily traded value (₹ Cr) over the last `n` sessions (fewer for new listings).
+    Today uses the exchange's own traded value; earlier days use close × volume."""
+    vals = [today_val] + [r[4] * r[6] for r in recs[-n:-1] if r[4] and r[6]]
+    return round(sum(vals) / len(vals) / 1e7, 2) if vals else 0
+
+
 def adjust(recs, sess_idx):
     """Adjust earlier prices and volumes for splits, bonuses and consolidations.
     Returns the list of (date, factor) adjustments made."""
@@ -599,6 +606,7 @@ def main():
                 "x": "B" if ex == "bse" else "N", "code": r["code"] if ex == "bse" else "",
                 "sec": sector.get(r["sym"], "") if ex == "nse" else "",
                 "c": r["c"], "v": int(r["vol"]), "tv": round(r["val"] / 1e7, 2),
+                "at": avg_turnover(recs, r["val"]),
                 **a, "_prev": a_prev,
                 **({"bc": bse_code_of[r["isin"]]} if ex == "nse" and r["isin"] in bse_code_of else {}),
             })
@@ -1123,7 +1131,7 @@ def write_csv(stocks, index_members, meta):
                    + ["Chg_" + p for p in periods]
                    + ["High_52W", "From_52WH_pct", "New_52W_High", "Vol_x_50d",
                       "Darvas_Status", "Box_Top", "Box_Bottom", "Box_Sessions",
-                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Indices", "ISIN",
+                      "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Avg_Value_20D_Cr", "Indices", "ISIN",
                       "Momentum_Score", "Market_Cap_Cr", "Cap_Class"])
         for s in stocks:
             dv = s.get("dv") or {}
@@ -1132,7 +1140,7 @@ def write_csv(stocks, index_members, meta):
                        + [s["ch"].get(p, "") for p in periods]
                        + [s["h52"], s["f52"], s["nh"], s["vx"],
                           dv.get("st", ""), dv.get("t", ""), dv.get("b", ""), dv.get("d", ""),
-                          s["ipo"] or "", s["ib"], s["v"], s["tv"],
+                          s["ipo"] or "", s["ib"], s["v"], s["tv"], s.get("at", ""),
                           "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else "", s["i"], s["ms"],
                           s.get("mc", ""), {"L": "Large", "M": "Mid", "S": "Small", "Mi": "Micro"}.get(s.get("mcl"), "")])
     with open(os.path.join(DATA_DIR, "meta_full.json"), "w") as f:
@@ -1383,6 +1391,9 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
 .chip.pos{background:var(--upbg);color:var(--up)} .chip.avd{background:var(--dnbg);color:var(--dn)}
 .rsi .hd{font-weight:500;font-size:14px} .rsi .rx{margin-top:8px;font-size:13px;line-height:1.45;color:var(--mute)} .rsi .rx b{color:var(--ink)} .rsi .rx div{margin-top:4px}
 .rsi .px{font-size:13px;color:var(--mute);margin-top:2px}
+.liq{font-size:11px;color:var(--mute);white-space:nowrap;font-weight:600} .liq.lo{color:var(--amb)}
+td small.ta{display:block;color:var(--mute);font-size:11px}
+.tg.liqb.on{background:var(--ambbg);color:var(--amb);border-color:var(--amb)}
 .chip.rs{background:var(--accbg);color:var(--acc);cursor:pointer;border:0;font-size:11px;padding:1px 6px;margin-left:2px} .chip.old{background:var(--ambbg);color:var(--amb)}
 .connect{font-size:14px;line-height:1.5} .connect ol{margin:8px 0 0;padding-left:20px}
 @media (max-width:480px){.tabs button{padding:7px 10px;font-size:13px}}
@@ -1429,7 +1440,8 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
   <div class="panel new20" id="wlnew" hidden><b>New in Top 20 today</b><div class="chips" id="wlnewlist" style="margin-top:8px"></div></div>
   <div class="panel">
     <div class="row"><input type="search" id="wlq" placeholder="Search symbol, naam ya note…">
-      <label class="l">Sort<span class="sortrow"><select id="wlsort"></select><button class="btn" id="wlasc" title="Ulta order"></button></span></label></div>
+      <label class="l">Sort<span class="sortrow"><select id="wlsort"></select><button class="btn" id="wlasc" title="Ulta order"></button></span></label>
+      <button class="tg liqb" id="liqwl" title="20 din ka average turnover ₹1 Cr/din se kam wale stocks chhupao">💧 Kam liquidity chhupao <small id="liqwln"></small></button></div>
     <div class="mlab">Auto tags <small>· roz ke data se</small></div><div class="chips" id="wltagsA"></div>
     <div class="mlab">Mere tags</div><div class="chips" id="wltagsM"></div>
   </div>
@@ -1467,10 +1479,11 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
     <div class="row" style="justify-content:space-between;align-items:center"><b>Claude Research</b>
       <span class="row" style="gap:6px;align-items:center"><span class="sub" id="rssync"></span><button class="btn sm" id="rsref" title="Sheet se dobara lao">↻</button></span></div>
     <div class="chips" id="rschips" style="margin-top:10px"></div>
+    <div class="chips" id="rschips2" style="margin-top:6px"></div>
     <div class="row"><input type="search" id="rsq" placeholder="Search company, symbol, thesis, red flags…"></div>
     <div class="row"><select id="rssec" aria-label="Sector"></select>
       <select id="rsage" aria-label="Research date"><option value="">Sab dates</option><option value="30">Pichhle 30 din</option><option value="90">Pichhle 90 din</option><option value="old">Purane (60+ din)</option></select>
-      <select id="rssort" aria-label="Sort"><option value="date">Naya research pehle</option><option value="ret">Return — zyada pehle</option><option value="retl">Return — kam pehle</option><option value="score">Momentum score</option><option value="name">Naam A–Z</option></select></div>
+      <select id="rssort" aria-label="Sort"><option value="date">Naya research pehle</option><option value="ret">Return — zyada pehle</option><option value="retl">Return — kam pehle</option><option value="score">Momentum score</option><option value="at">Turnover (20 din avg)</option><option value="name">Naam A–Z</option></select></div>
   </div>
   <div id="rslist"></div>
   <div class="foot" id="rsfoot"></div>
@@ -1483,7 +1496,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
     <div class="chips" id="lpchips2" style="margin-top:6px"></div>
     <div class="row"><input type="search" id="lpq" placeholder="Search company, symbol, thesis, file ka naam…"></div>
     <div class="row"><select id="lplist" aria-label="List"></select>
-      <select id="lpsort" aria-label="Sort"><option value="last">Nayi file pehle</option><option value="docs">Sabse zyada files</option><option value="score">Momentum score</option><option value="name">Naam A–Z</option></select></div>
+      <select id="lpsort" aria-label="Sort"><option value="last">Nayi file pehle</option><option value="docs">Sabse zyada files</option><option value="score">Momentum score</option><option value="at">Turnover (20 din avg)</option><option value="name">Naam A–Z</option></select></div>
   </div>
   <div id="lplist2"></div>
   <div class="foot" id="lpfoot"></div>
@@ -1537,6 +1550,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
     <button class="btn" id="csv">Export CSV</button>
     <button class="btn" id="reset">Reset</button>
   </div>
+  <div class="row"><button class="tg liqb" id="liqsc" title="20 din ka average turnover ₹1 Cr/din se kam wale stocks chhupao">💧 Kam liquidity chhupao <small id="liqscn"></small></button></div>
   <div class="hint" id="hint"></div>
 </div>
 <div class="stats" id="stats"></div>
@@ -1597,7 +1611,7 @@ Object.keys(IDX).forEach(k => og.appendChild(new Option(`${k} (${IDX[k].length})
 $("universe").appendChild(og);
 $("sector").add(new Option("All sectors",""));
 [...new Set(S.map(s=>s.sec).filter(Boolean))].sort().forEach(s => $("sector").add(new Option(s,s)));
-[["chg","% change"],["ms","Momentum score"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["tv","Traded value"],["sym","Symbol A–Z"]]
+[["chg","% change"],["ms","Momentum score"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["at","Turnover (20 din avg)"],["tv","Traded value (aaj)"],["sym","Symbol A–Z"]]
   .forEach(([v,t])=>$("sortsel").add(new Option(t,v)));
 const HAS_MC = S.some(s => s.mc);
 if (HAS_MC) $("sortsel").add(new Option("Market cap","mc"));
@@ -1611,7 +1625,7 @@ const COLS = [
   {k:"f52", t:"From 52W high", cls:"hide-m"},
   {k:"vx", t:"Vol × avg", cls:"hide-m"},
   {k:"dv", t:"Darvas box", cls:"l hide-m"},
-  {k:"tv", t:"Value ₹Cr", cls:"hide-m"},
+  {k:"at", t:"₹Cr/din"},
   {k:"sec", t:"Sector", cls:"l hide-m"},
 ];
 const DVORD = {bo:3, box:2, form:1};
@@ -1625,6 +1639,7 @@ function val(s, k){
 }
 
 function filtered(){
+  liqN.sc = 0;
   const q = st.q.trim().toUpperCase();
   const segs = st.uni.startsWith("I:") ? null : UNI[st.uni];
   const set = st.uni.startsWith("I:") ? idxSets[st.uni.slice(2)] : null;
@@ -1642,6 +1657,7 @@ function filtered(){
     if (st.minp!=null && s.c < st.minp) return false;
     if (st.maxp!=null && s.c > st.maxp) return false;
     if (st.minv!=null && s.tv < st.minv) return false;
+    if (lowLiq(s)) { liqN.sc++; if (liqHide.sc) return false; }
     if (st.minx!=null && (s.vx==null || s.vx < st.minx)) return false;
     if (st.max52!=null && (s.f52==null || s.f52 < -st.max52)) return false;
     if (q && !s.s.toUpperCase().includes(q) && !s.n.toUpperCase().includes(q) && !(s.code||"").includes(q)) return false;
@@ -1862,6 +1878,7 @@ function detail(s, ctx, cols, view, pre){
   add("Exchange", `${esc(s.seg)} · ${esc(s.sr)}${s.code?` · BSE ${esc(s.code)}`:""}`);
   add("52-week high", `₹${fmt(s.h52)} (${sgn(s.f52)})${s.nh?" · new high today":""}`);
   add("Volume today", `${fmtInt(s.v)} · ${s.vx==null?"—":fmt(s.vx,1)+"× 50-day avg"}`);
+  add("Turnover", `${crF(s.at)} Cr/din (20 din avg) · aaj ${crF(s.tv)} Cr${lowLiq(s)?` · <span class="liq lo">💧 kam liquidity (₹${LIQ} Cr se kam)</span>`:""}`);
   if (d.st==="bo" || d.st==="box") {
     add(d.st==="bo" ? "Broke out of box" : "Darvas box", `₹${fmt(d.b)} – ₹${fmt(d.t)} (height ${fmt((d.t-d.b)/d.t*100,1)}%)`);
     add("Box age", `${d.d} sessions`);
@@ -1921,6 +1938,7 @@ function render(){
     if (s.seg==="NSE" && s.sr!=="EQ") tags += `<span class="tag">${esc(s.sr)}</span>`;
     if (s.nh) tags += ` <span class="chip nh">52W high</span>`;
     if (s.dv && s.dv.st==="bo") tags += ` <span class="chip bo">Breakout</span>`;
+    if (lowLiq(s)) tags += ` <span class="liq lo" title="20 din ka average turnover ₹${LIQ} Cr/din se kam">💧</span>`;
     const held = HELD.get(s.k);
     if (held) tags += ` <span class="chip hold">Holding</span>`;
     tags += rsBadge(s.k);
@@ -1932,13 +1950,14 @@ function render(){
       <td class="hide-m">${sgn(s.f52)}</td>
       <td class="hide-m">${s.vx==null?"—":fmt(s.vx,1)+"×"}</td>
       <td class="l hide-m">${dvCell(s)}</td>
-      <td class="hide-m">${fmt(s.tv)}</td>
+      <td title="Turnover: 20 din ka average, neeche aaj ka">${crF(s.at).replace(/^₹/,"")}<small class="ta">aaj ${crF(s.tv).replace(/^₹/,"")}</small></td>
       <td class="l hide-m">${esc(s.sec)||"—"}</td></tr>`;
     return main + (open.has(id) ? detail(s, held, COLS.length, "scan") : "");
   }).join("") || `<tr><td colspan="${COLS.length}" class="l na" style="padding:24px">No stocks match these filters.</td></tr>`;
   document.querySelectorAll("#body tr.r").forEach(tr => tr.onclick = () => {
     const id = tr.dataset.id; open.has(id) ? open.delete(id) : open.add(id); render();
   });
+  liqBtns();
   $("pinfo").textContent = current.length ? `Showing ${st.page*PAGE+1}–${Math.min((st.page+1)*PAGE,current.length)} of ${fmtInt(current.length)} · tap a stock for details` : "";
   $("prev").disabled = st.page===0; $("next").disabled = st.page>=pages-1;
   mountCharts();
@@ -1955,10 +1974,10 @@ $("next").onclick = () => { st.page++; render(); window.scrollTo(0,0); };
 $("reset").onclick = () => location.reload();
 $("csv").onclick = () => {
   const hdr = ["Symbol","Name","Segment","Series","BSE_Code","Sector","Close", ...M.periods.map(p=>"%Chg "+p[0]),
-               "52W_High","From_52WH_%","Vol_x","Darvas","Box_Top","Box_Bottom","Volume","Value_Cr"];
+               "52W_High","From_52WH_%","Vol_x","Darvas","Box_Top","Box_Bottom","Volume","Value_Cr","Avg_Value_20D_Cr"];
   const q = v => `"${String(v??"").replace(/"/g,'""')}"`;
   const lines = [hdr.join(",")].concat(current.map(s => [s.s,s.n,s.seg,s.sr,s.code,s.sec,s.c, ...M.periods.map(p=>s.ch[p[0]]??""),
-     s.h52,s.f52,s.vx,s.dv?s.dv.st:"",s.dv&&s.dv.t,s.dv&&s.dv.b,s.v,s.tv].map(q).join(",")));
+     s.h52,s.f52,s.vx,s.dv?s.dv.st:"",s.dv&&s.dv.t,s.dv&&s.dv.b,s.v,s.tv,s.at].map(q).join(",")));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/csv"}));
   a.download = `scan_${st.setup}_${st.period}_${M.asOf.replace(/ /g,"")}.csv`; a.click();
@@ -2186,6 +2205,22 @@ const MOM_PARTS = [
 ];
 const WLK = {cache:"wl_cache", queue:"wl_queue", api:"wl_api"};
 const jget = (k, d) => { try { const v = JSON.parse(store.get(k) || "null"); return v == null ? d : v; } catch(e){ return d; } };
+// ---- liquidity: 20-session average traded value (₹ Cr/day). Below LIQ = 💧 (hard to buy/sell without moving the price)
+const LIQ = 1;
+const lowLiq = s => !!s && s.at != null && s.at < LIQ;
+const crF = n => n == null || n === "" ? "—" : "₹" + fmt(n, n < 1 ? 2 : n < 100 ? 1 : 0);
+const tvChip = s => s && s.at != null ? ` <span class="liq${lowLiq(s) ? " lo" : ""}" title="20 din ka average turnover (aaj ${crF(s.tv)} Cr)">${lowLiq(s) ? "💧 " : ""}${crF(s.at)} Cr/din</span>` : "";
+const liqHide = {sc: !!jget("liq_sc", false)}, liqN = {sc: 0, wl: 0};
+function liqBtns(){
+  ["sc", "wl"].forEach(x => { const b = $("liq" + x); if (!b) return; b.classList.toggle("on", liqHide.sc); $("liq" + x + "n").textContent = liqN[x] ? fmtInt(liqN[x]) : ""; });
+}
+["liqsc", "liqwl"].forEach(id => $(id).onclick = () => { liqHide.sc = !liqHide.sc; store.set("liq_sc", JSON.stringify(liqHide.sc)); st.page = 0; render(); wlLimit = 100; if (!$("v-wl").hidden) renderWl(); });
+// holdings = published portfolio sheet (HELD) + "holdings" action of the Apps Script (My Holdings sheet, qty > 0)
+function holdKeys(){
+  const out = new Set(HELD.keys()), h = SD.hold;
+  ((h && h.data && h.data.holdings) || []).forEach(x => { const t = resolveToken(x.symbol); if (t) out.add(t.k); });
+  return out;
+}
 let WL = new Map(), wlQueue = [], wlOpen = new Set(), wlSel = new Set(), wlLimit = 100, wlBusy = false, wlAgain = false, wlErr = "", wlSynced = null, wlDirty = false;
 let RANK = new Map(), PRANK = new Map(), wlVisible = [], wlTags = new Set(), wlForce = "", wlVer = 0;
 const ISO = M.asOfISO || "", MAXW = 1000;
@@ -2283,6 +2318,7 @@ const AUTO = [
   ["Volume Spike", s => (s.mi || [])[0] >= 2],
   ["Near 52W High", s => s.f52 != null && s.f52 >= -5],
   ["IPO Base", s => !!s.ib],
+  ["💧 Kam liquidity", s => lowLiq(s)],
 ];
 const autoOf = s => s ? AUTO.filter(([, f]) => f(s)).map(([t]) => t) : [];
 
@@ -2438,7 +2474,8 @@ const SORTS = [
   ["chg", "% change", (k,s) => s && chgP(s)],          // follows the period dropdown above the price column
   ["vol", "Volume (aaj)", (k,s) => s && s.v],
   ["vx", "Volume spike (× 20-din avg)", (k,s) => s && (s.mi || [])[0]],
-  ["tv", "Turnover ₹", (k,s) => s && s.tv],
+  ["at", "Turnover (20 din avg)", (k,s) => s && s.at],
+  ["tv", "Turnover (aaj)", (k,s) => s && s.tv],
   ["f52", "52W high se doori", (k,s) => s && s.f52],
   ["rk", "Rank gain (kal se)", k => rankChg(k)],
   ["price", "Price", (k,s) => s && px(s).c],
@@ -2458,8 +2495,10 @@ $("wlasc").onclick = () => { SO.asc = !SO.asc; store.set("wl_sort", JSON.stringi
 function wlFiltered(order){
   const q = $("wlq").value.trim().toUpperCase();
   const set = new Set(order), missing = wlVisible.filter(k => !set.has(k));
+  liqN.wl = 0;
   let list = order.concat(missing).filter(k => {
     const it = getIt(k), s = BYK.get(k);
+    if (lowLiq(s)) { liqN.wl++; if (liqHide.sc && k !== wlForce) return false; }
     if (wlTags.size && ![...autoOf(s), ...it.tags].some(t => wlTags.has(t))) return false;
     if (q && !symOf(k).toUpperCase().includes(q) && !((s && s.n) || it.name || "").toUpperCase().includes(q) && !it.notes.toUpperCase().includes(q)) return false;
     return true;
@@ -2570,7 +2609,7 @@ function renderWl(order){
     if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
     const held = HELD.get(k);
     const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
-      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${rsBadge(k)}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mc?` · ₹${fmtInt(s.mc)} Cr`:(s.mcl?` · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]}`:"")}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
+      <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${rsBadge(k)}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mc?` · ₹${fmtInt(s.mc)} Cr`:(s.mcl?` · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]}`:"")}${s.at!=null?` · ${lowLiq(s)?"💧 ":""}${crF(s.at)} Cr/din`:""}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms,s)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
       <td class="l hide-m">${dvCell(s)}</td></tr>`;
@@ -2580,6 +2619,7 @@ function renderWl(order){
   $("wlmore").hidden = list.length <= wlLimit;
   $("wlfoot").innerHTML = `Rank aur score order sirf on ki hui lists ke stocks mein. Momentum Score roz ${esc(M.asOf)} ke end-of-day data se (live nahi). Rank change ${esc(M.prevAsOf||"pichhle din")} ke score se. Fixed lists: NSE index files, NSE F&amp;O list, NSE/BSE bhavcopy (SME: pichhle 10 sessions mein trade hue stocks), Market cap (₹ Cr): NSE stocks ka NSE ki apni daily file se; BSE-only stocks ka BSE ke shares (hafte mein ek baar) × aaj ka close se (split/bonus ke baad refresh tak khali ho sakta hai; BSE-only ko cap size tag nahi). Cap size = NSE mainboard mein market cap rank: Large top 100, Mid 101–250, Small 251–500, Micro baaki (SME mein tag nahi). File na mile to NSE index lists se. Mainboard Shift: pichhle 1 saal mein NSE SME se mainboard pe aaye stocks (ye IPO list mein nahi ginte). Nayi listing ka score: jis part ka data nahi (3M, 50/200 DMA, Nifty) use hata kar baaki ko 100 mein scale karte hain; 20 session se kam wale pe ~ lagta hai. IPO: NSE past issues list + BSE-only nayi listings (BSE wale ka issue price nahi milta, listing din ka open dikhta hai; dono split/bonus ke hisaab se adjust). NEW = pichhle 30 din mein list mein aaya. Nifty strength = stock ka 3M return minus Nifty 50 stocks ka equal-weight average 3M return (${sgn(M.bench3M)}). Not investment advice.`;
   wlDirty = false;
+  liqBtns();
   mountCharts();
 }
 
@@ -3110,7 +3150,8 @@ $("tglist").addEventListener("click", e => {
 // stock research chat). Private data: only via the Apps Script with the key, never in this public repo.
 const RSV = [["Strong case","s"],["Watch","w"],["Cautious","c"],["Red flags","r"]];
 const rsCls = v => (RSV.find(x => x[0].toLowerCase() === String(v || "").trim().toLowerCase()) || [0, "w"])[1];
-const rsF = new Set(jget("rs_f", []).filter(f => RSV.some(x => x[0] === f)));
+const RSX = [["hold","💼 Meri holdings"],["redo","🔁 Dobara padho"],["liq","💧 Kam liquidity chhupao"]];
+const rsF = new Set(jget("rs_f", []).filter(f => RSV.some(x => x[0] === f) || RSX.some(x => x[0] === f)));
 const rsOpen = new Set(), RSP = new Map(), rsQ = [];
 let rsQs = "", RSK = new Map(), rsRun = 0, rsT = 0;
 const rsId = r => r.nse || r.bse || r.company;
@@ -3144,12 +3185,12 @@ function rsPump(){
   }
 }
 async function rsShow(force){
-  const p = sdLoad("rs", "research", force);
+  const p = Promise.all([sdLoad("rs", "research", force), sdLoad("hold", "holdings", force)]);
   rsRender(); await p; rsIndex(); rsRender();
 }
 function rsItem(r){
   const id = rsId(r), op = rsOpen.has(id), cls = rsCls(r.view);
-  const sym = r.s ? `<button class="tg" data-tk="${esc(r.s.k)}" title="Scanner mein dekho"><b>${esc(r.s.s)}</b>${scoreChip(r.s.ms, r.s)}</button>`
+  const sym = r.s ? `<button class="tg" data-tk="${esc(r.s.k)}" title="Scanner mein dekho"><b>${esc(r.s.s)}</b>${scoreChip(r.s.ms, r.s)}</button>${tvChip(r.s)}`
     : (r.nse || r.bse ? `<span class="tg">${esc(r.nse || r.bse)}</span>` : "");
   let pxl;
   if (!r.s) pxl = "Scanner mein ye stock nahi mila — return nahi dikh sakta";
@@ -3159,7 +3200,7 @@ function rsItem(r){
   const link = safeUrl(r.link);
   return `<div class="tgi rsi" data-rsi="${esc(id)}">`
     + `<div class="th"><span class="vw ${cls}">${esc(r.view || "—")}</span><b>${esc(r.company)}</b>${sym}`
-    + `${r.age != null && r.age > 60 ? `<span class="chip old">Purana ho gaya</span>` : ""}`
+    + `${r.hold ? `<span class="chip hold">💼 Holding</span>` : ""}${r.redo ? `<span class="chip old">🔁 Dobara padho</span>` : r.age != null && r.age > 60 ? `<span class="chip old">Purana ho gaya</span>` : ""}`
     + `<span class="tt">${esc(fdIso(String(r.date).slice(0, 10)))}${r.sector ? " · " + esc(r.sector) : ""}${r.listing ? " · " + esc(r.listing) : ""}</span></div>`
     + `<div class="hd">${esc(r.thesis || "—")}</div><div class="px">${pxl}</div>`
     + (op ? `<div class="rx"><div><b>Red flags:</b> ${esc(r.redFlags || "—")}</div><div><b>Watch next:</b> ${esc(r.watchNext || "—")}</div></div>`
@@ -3169,9 +3210,11 @@ function rsItem(r){
     + `</div>`;
 }
 function rsRender(){
-  const s = sdState("rs");
+  const s = sdState("rs"), hk = holdKeys();
   const all = ((s.data && s.data.research) || []).map(r0 => {
     const r = Object.assign({}, r0); r.s = rsStock(r); r.age = rsAge(r.date);
+    r.hold = !!(r.s && hk.has(r.s.k));
+    r.redo = r.age != null && ((r.age > 60 && r.s && r.s.ms >= 70) || (r.hold && r.age > 30));
     if (r.s) { r.c = px(r.s).c; r.pp = rsPx(r); r.ret = r.pp && r.pp.p && r.c ? (r.c / r.pp.p - 1) * 100 : null; }
     return r;
   });
@@ -3180,15 +3223,20 @@ function rsRender(){
   $("rssec").innerHTML = `<option value="">Sab sectors</option>` + secs.map(x => `<option>${esc(x)}</option>`).join("");
   $("rssec").value = secs.includes(sv) ? sv : "";
   const q = rsQs.trim().toUpperCase(), sec = $("rssec").value, ag = $("rsage").value;
-  const base = all.filter(r => (!sec || r.sector === sec)
+  const liqAll = all.filter(r => lowLiq(r.s)).length;
+  const base = all.filter(r => (!sec || r.sector === sec) && !(rsF.has("liq") && lowLiq(r.s))
     && (!ag || (ag === "old" ? r.age != null && r.age > 60 : r.age != null && r.age <= +ag))
     && (!q || [r.company, r.nse, r.bse, r.sector, r.thesis, r.redFlags, r.watchNext, r.listing].some(v => String(v || "").toUpperCase().includes(q))
         || (r.s && (r.s.s.toUpperCase().includes(q) || r.s.n.toUpperCase().includes(q)))));
   const vOf = r => (RSV.find(x => x[1] === rsCls(r.view)) || [""])[0];
   $("rschips").innerHTML = RSV.map(([v, c]) => `<button class="tg${rsF.has(v) ? " on" : ""}" data-rsf="${esc(v)}"><span class="vw ${c}">${esc(v)}</span> <small>${base.filter(r => vOf(r) === v).length}</small></button>`).join("");
-  const list = base.filter(r => !rsF.size || rsF.has(vOf(r)));
-  const so = $("rssort").value, rv = r => r.ret == null ? null : r.ret;
-  list.sort(so === "name" ? (a, b) => a.company.localeCompare(b.company)
+  const xOk = (f, r) => f === "hold" ? r.hold : f === "redo" ? r.redo : true;
+  $("rschips2").innerHTML = RSX.map(([f, t]) => `<button class="tg${f === "liq" ? " liqb" : ""}${rsF.has(f) ? " on" : ""}" data-rsf="${f}">${t} <small>${f === "liq" ? liqAll : base.filter(r => xOk(f, r)).length}</small></button>`).join("");
+  const vF = [...rsF].filter(f => RSV.some(x => x[0] === f));
+  const list = base.filter(r => (!vF.length || vF.includes(vOf(r))) && ["hold", "redo"].every(f => !rsF.has(f) || xOk(f, r)));
+  const so = rsF.has("redo") ? "score" : $("rssort").value, rv = r => r.ret == null ? null : r.ret;
+  list.sort(so === "at" ? (a, b) => ((b.s && b.s.at) ?? -1) - ((a.s && a.s.at) ?? -1) || a.company.localeCompare(b.company)
+    : so === "name" ? (a, b) => a.company.localeCompare(b.company)
     : so === "score" ? (a, b) => ((b.s && b.s.ms) ?? -1) - ((a.s && a.s.ms) ?? -1) || a.company.localeCompare(b.company)
     : so === "ret" || so === "retl" ? (a, b) => { const x = rv(a), y = rv(b); if (x == null) return y == null ? 0 : 1; if (y == null) return -1; return so === "ret" ? y - x : x - y; }
     : (a, b) => String(b.date).localeCompare(String(a.date)) || a.company.localeCompare(b.company));
@@ -3201,9 +3249,9 @@ function rsRender(){
   $("rslist").innerHTML = html;
   const note = sdNote(s), last = all.reduce((m, r) => String(r.updated || r.date) > m ? String(r.updated || r.date) : m, "");
   $("rssync").innerHTML = (all.length ? `${list.length} / ${all.length} stocks` + (last ? " · update: " + esc(fdIso(last.slice(0, 10))) : "") : "") + (note ? " · " + note : "");
-  $("rsfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Research</b> tab se aata hai (public repo mein nahi); har stock research chat ke end mein Claude row add/update karta hai. Return = latest close (${esc(M.asOf)}) ÷ research date ka close (split/bonus adjusted), ya Sheet mein likha price. 60 din se purana research = <b>Purana ho gaya</b>. Scanner mein 📚 = is stock ka research hai. "View" research ka read hai, buy/sell call nahi. Not investment advice.`;
+  $("rsfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Research</b> tab se aata hai (public repo mein nahi); har stock research chat ke end mein Claude row add/update karta hai. Return = latest close (${esc(M.asOf)}) ÷ research date ka close (split/bonus adjusted), ya Sheet mein likha price. 60 din se purana research = <b>Purana ho gaya</b>. 🔁 Dobara padho = 60+ din purana aur score 70+, ya meri holding jiska research 30+ din purana (score ke order mein). 💼 = My Holdings sheet mein qty &gt; 0. Turnover = 20 din ka average (₹ Cr/din); 💧 = ₹${LIQ} Cr se kam. Scanner mein 📚 = is stock ka research hai. "View" research ka read hai, buy/sell call nahi. Not investment advice.`;
 }
-$("rschips").onclick = e => { const b = e.target.closest("[data-rsf]"); if (!b) return; const f = b.dataset.rsf;
+$("rschips").onclick = $("rschips2").onclick = e => { const b = e.target.closest("[data-rsf]"); if (!b) return; const f = b.dataset.rsf;
   rsF.has(f) ? rsF.delete(f) : rsF.add(f); store.set("rs_f", JSON.stringify([...rsF])); rsRender(); };
 $("rsq").addEventListener("input", e => { rsQs = e.target.value; rsRender(); });
 ["rssec", "rsage", "rssort"].forEach(id => $(id).addEventListener("input", () => rsRender()));
@@ -3228,7 +3276,8 @@ document.addEventListener("click", e => {
 // Private data: only via the Apps Script with the key, never in this public repo. Only file NAMES are shown.
 const LPV = [["Positive","s"],["Watch","w"],["Caution","c"],["Avoid","r"],["Learning","l"],["Not researched","n"]];
 const lpVw = v => { v = String(v || "").toLowerCase(); const m = LPV.find(x => v.includes(x[0].toLowerCase())); return m ? m[0] : ""; };
-const LPX = [["hold","💼 Holding"],["claude","📚 Claude ✓"],["todo","📁 Docs hain, research nahi"],["new","🆕 Sirf screenshot/list"]];
+const LPX = [["hold","💼 Meri holdings"],["claude","📚 Claude ✓"],["todo","📁 Docs hain, research nahi"],["new","🆕 Sirf screenshot/list"],["liq","💧 Kam liquidity chhupao"]];
+const RS2LP = {s: "Positive", w: "Watch", c: "Caution", r: "Avoid"};
 const lpF = new Set(jget("lp_f", []).filter(f => LPV.some(x => x[0] === f) || LPX.some(x => x[0] === f)));
 const lpOpen = new Set();
 let lpQs = "";
@@ -3239,23 +3288,26 @@ const lpIcon = f => { const x = f.toLowerCase();
     : /report|rating|nuvama|icici|motilal|kotak|jm_fin|emkay|ambit|arihant/.test(x) && !/reply/.test(x) ? "📊 " : /tweet|thread|twitter/.test(x) ? "🐦 "
     : /\.(jpe?g|png)$/.test(x) ? "🖼️ " : /\.(mp4|mp3)$/.test(x) ? "🎬 " : "📄 "; };
 async function lpShow(force){
-  const p = sdLoad("lp", "laptop", force), q = sdLoad("rs", "research");
+  const p = sdLoad("lp", "laptop", force), q = Promise.all([sdLoad("rs", "research"), sdLoad("hold", "holdings", force)]);
   lpRender(); await p; await q; rsIndex(); lpRender();
 }
 function lpItem(r){
   const id = lpId(r), op = lpOpen.has(id), v = lpVw(r.view), cls = (LPV.find(x => x[0] === v) || [0, "n"])[1];
-  const sym = r.s ? `<button class="tg" data-tk="${esc(r.s.k)}" title="Scanner mein dekho"><b>${esc(r.s.s)}</b>${scoreChip(r.s.ms, r.s)}</button>${rsBadge(r.s.k)}`
+  const sym = r.s ? `<button class="tg" data-tk="${esc(r.s.k)}" title="Scanner mein dekho"><b>${esc(r.s.s)}</b>${scoreChip(r.s.ms, r.s)}</button>${rsBadge(r.s.k)}${tvChip(r.s)}`
     : `<span class="chip old">${r.nse || r.bse ? esc(r.nse || r.bse) + " · " : ""}Scanner mein nahi</span>`;
-  const pos = /hold/i.test(r.position) ? `<span class="chip pos">${esc(r.position)}</span>` : /avoid/i.test(r.position) ? `<span class="chip avd">Avoid</span>`
+  const pos = r.hold ? `<span class="chip pos">💼 Holding</span>` : /hold/i.test(r.position) ? "" : /avoid/i.test(r.position) ? `<span class="chip avd">Avoid</span>`
     : r.position && !/^watchlist$/i.test(r.position) ? `<span class="chip">${esc(r.position)}</span>` : "";
+  const shortD = d => esc(fdIso(String(d).slice(0, 10)).replace(/ \d{4}$/, ""));
+  const vlab = r.nr ? `${esc(r.nr.view || r.v)} · ${shortD(r.nr.date)}` : esc(r.view);
   const files = r.docNames ? r.docNames.split(" | ").filter(Boolean) : [];
   const info = [r.docs ? `📁 ${r.docs} file${r.docs > 1 ? "s" : ""}` : "", r.last ? "aakhri " + esc(fdIso(r.last)) : "", r.lists ? "📋 " + esc(r.lists) : ""].filter(Boolean).join(" · ");
   return `<div class="tgi lpi" data-lpi="${esc(id)}">`
-    + `<div class="th">${v ? `<span class="vw ${cls}">${esc(r.view)}</span>` : ""}<b>${esc(r.company)}</b>${sym}${pos}`
+    + `<div class="th">${v ? `<span class="vw ${cls}"${r.nr ? ' title="Claude Research tab ka naya view"' : ""}>${r.nr ? "📚 " : ""}${vlab}</span>` : ""}<b>${esc(r.company)}</b>${sym}${pos}`
     + `<span class="tt">${esc(r.sector || (r.s && r.s.sec) || "")}</span></div>`
     + (r.thesis && r.thesis !== "—" ? `<div class="hd">${esc(r.thesis)}</div>` : "")
+    + (r.nr ? `<div class="px">Excel: ${esc(lpVw(r.xv) || "research nahi")}${r.lastResearched ? ` (${shortD(r.lastResearched)})` : ""}</div>` : "")
     + (info ? `<div class="px">${info}</div>` : "")
-    + (op ? `<div class="rx">${r.redFlags && r.redFlags !== "—" ? `<div><b>Red flags:</b> ${esc(r.redFlags)}</div>` : ""}`
+    + (op ? `<div class="rx">${r.nr && r.xt && r.xt !== "—" ? `<div><b>Excel thesis:</b> ${esc(r.xt)}</div>` : ""}${r.redFlags && r.redFlags !== "—" ? `<div><b>Red flags:</b> ${esc(r.redFlags)}</div>` : ""}`
           + `${r.watchNext && r.watchNext !== "—" ? `<div><b>Watch next:</b> ${esc(r.watchNext)}</div>` : ""}`
           + `${r.notes ? `<div><b>Notes:</b> ${esc(r.notes)}</div>` : ""}`
           + `${r.lastResearched ? `<div><b>Excel mein last research:</b> ${esc(fdIso(r.lastResearched))}</div>` : ""}`
@@ -3266,9 +3318,19 @@ function lpItem(r){
     + `</div>`;
 }
 function lpRender(){
-  const s = sdState("lp");
+  const s = sdState("lp"), hk = holdKeys();
   const all = ((s.data && s.data.laptop) || []).map(r0 => { const r = Object.assign({}, r0); r.s = lpStock(r); r.v = lpVw(r.view);
-    r.cl = !!(r.s && RSK.has(r.s.k)); return r; });
+    r.cl = !!(r.s && RSK.has(r.s.k)); r.hold = !!(r.s && hk.has(r.s.k));
+    // Claude Research row newer than the Excel's "Last researched" (or Excel blank) → show the Research view
+    const rr = r.cl ? RSK.get(r.s.k) : null, rd = rr ? String(rr.date || "").slice(0, 10) : "", xd = String(r.lastResearched || "").slice(0, 10);
+    if (rr && /^\d{4}-\d{2}-\d{2}$/.test(rd) && (!/^\d{4}-\d{2}-\d{2}$/.test(xd) || rd > xd)) {
+      r.nr = rr; r.xv = r.view; r.xt = r.thesis;
+      r.v = RS2LP[rsCls(rr.view)] || r.v; r.view = r.v;
+      if (rr.thesis) r.thesis = rr.thesis;
+      if (rr.redFlags) r.redFlags = rr.redFlags;
+      if (rr.watchNext) r.watchNext = rr.watchNext;
+    }
+    return r; });
   const lists = [...new Set(all.flatMap(r => String(r.lists || "").split(" · ").filter(Boolean)))].sort();
   const lv = $("lplist").value;
   $("lplist").innerHTML = `<option value="">Sab lists</option>` + lists.map(x => `<option>${esc(x)}</option>`).join("");
@@ -3277,14 +3339,15 @@ function lpRender(){
   const base = all.filter(r => (!ls || String(r.lists).split(" · ").includes(ls))
     && (!q || [r.company, r.nse, r.bse, r.sector, r.thesis, r.redFlags, r.watchNext, r.notes, r.lists, r.docNames].some(v => String(v || "").toUpperCase().includes(q))
         || (r.s && (r.s.s.toUpperCase().includes(q) || r.s.n.toUpperCase().includes(q)))));
-  const xOk = (f, r) => f === "hold" ? /hold/i.test(r.position) : f === "claude" ? r.cl
+  const xOk = (f, r) => f === "hold" ? r.hold : f === "liq" ? !lowLiq(r.s) : f === "claude" ? r.cl
     : f === "todo" ? r.docs > 0 && !r.cl && (!r.v || r.v === "Not researched") : f === "new" ? !/E/.test(r.source) && !/F/.test(r.source) : true;
   const vF = [...lpF].filter(f => LPV.some(x => x[0] === f)), xF = [...lpF].filter(f => LPX.some(x => x[0] === f));
   $("lpchips").innerHTML = LPV.map(([v, c]) => `<button class="tg${lpF.has(v) ? " on" : ""}" data-lpf="${esc(v)}"><span class="vw ${c}">${esc(v)}</span> <small>${base.filter(r => r.v === v).length}</small></button>`).join("");
-  $("lpchips2").innerHTML = LPX.map(([f, t]) => `<button class="tg${lpF.has(f) ? " on" : ""}" data-lpf="${f}">${t} <small>${base.filter(r => xOk(f, r)).length}</small></button>`).join("");
+  $("lpchips2").innerHTML = LPX.map(([f, t]) => `<button class="tg${f === "liq" ? " liqb" : ""}${lpF.has(f) ? " on" : ""}" data-lpf="${f}">${t} <small>${f === "liq" ? base.filter(r => lowLiq(r.s)).length : base.filter(r => xOk(f, r)).length}</small></button>`).join("");
   const list = base.filter(r => (!vF.length || vF.includes(r.v)) && xF.every(f => xOk(f, r)));
   const so = $("lpsort").value;
   list.sort(so === "name" ? (a, b) => a.company.localeCompare(b.company)
+    : so === "at" ? (a, b) => ((b.s && b.s.at) ?? -1) - ((a.s && a.s.at) ?? -1) || a.company.localeCompare(b.company)
     : so === "docs" ? (a, b) => b.docs - a.docs || a.company.localeCompare(b.company)
     : so === "score" ? (a, b) => ((b.s && b.s.ms) ?? -1) - ((a.s && a.s.ms) ?? -1) || a.company.localeCompare(b.company)
     : (a, b) => String(b.last || "").localeCompare(String(a.last || "")) || a.company.localeCompare(b.company));
@@ -3297,7 +3360,7 @@ function lpRender(){
   $("lplist2").innerHTML = html;
   const note = sdNote(s), at = s.data && s.data.refreshed;
   $("lpsync").innerHTML = (all.length ? `${list.length} / ${all.length} stocks` + (at ? " · refresh: " + esc(fdIso(String(at).slice(0, 10))) : "") : "") + (note ? " · " + note : "");
-  $("lpfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Laptop</b> tab se aata hai (public repo mein nahi). Claude isse <b>Stock_Watchlist.xlsx</b> (View, Thesis, Red flags, Watch next, My Position), <b>Stocks</b> folder ki files ke naam, screenshots aur list wali images se banata hai — PDF ke andar nahi padhta. Files laptop par hi hain; yahan sirf naam. 📚 = Claude Research tab mein research hai. Refresh: laptop on + Claude app khula + dono folders jude, phir Claude ko bolo “laptop watchlist refresh karo”. Not investment advice.`;
+  $("lpfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Laptop</b> tab se aata hai (public repo mein nahi). Claude isse <b>Stock_Watchlist.xlsx</b> (View, Thesis, Red flags, Watch next, My Position), <b>Stocks</b> folder ki files ke naam, screenshots aur list wali images se banata hai — PDF ke andar nahi padhta. Files laptop par hi hain; yahan sirf naam. 📚 = Claude Research tab mein research hai; agar wo Excel ke "Last researched" se naya hai to card pe Research tab ka view/thesis dikhta hai (📚 ke saath) aur neeche Excel wala view. 💼 = My Holdings sheet (qty &gt; 0), Excel ka My Position nahi. Turnover = 20 din ka average (₹ Cr/din); 💧 = ₹${LIQ} Cr se kam. Refresh: laptop on + Claude app khula + dono folders jude, phir Claude ko bolo “laptop watchlist refresh karo”. Not investment advice.`;
 }
 $("lpchips").onclick = $("lpchips2").onclick = e => { const b = e.target.closest("[data-lpf]"); if (!b) return; const f = b.dataset.lpf;
   lpF.has(f) ? lpF.delete(f) : lpF.add(f); store.set("lp_f", JSON.stringify([...lpF])); lpRender(); };
