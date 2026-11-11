@@ -1,5 +1,5 @@
 /**
- * Backend for the Stock Scanner app (GitHub Pages)  — version 5
+ * Backend for the Stock Scanner app (GitHub Pages)  — version 6
  * Everything private lives only in this Google Sheet / your Google Drive (never in the public GitHub repo):
  *   - "Watchlist" tab     : one row per stock — Watchlist 1-5 membership, notes, tags, Old-list removals
  *   - "Rank history" tab  : daily rank of each stock inside Watchlist 1-5
@@ -7,6 +7,8 @@
  *   - "Telegram" tab      : posts saved by the Telegram bot (action "telegram_add"); files go to the Drive folder
  *                           "Telegram Reports (bot)". Rows and files older than 30 days are deleted every night.
  *   - "Research" tab      : one row per stock researched in Claude chats (Claude adds/updates rows) — read only here
+ *   - "Laptop" tab        : laptop watchlist (Excel remarks + folder file list + lists); Claude rewrites it on
+ *                           "laptop watchlist refresh karo" — read only here, don't edit by hand
  *   - holdings            : read only from the sheet "My Holdings (auto-updated)" (never written to)
  *
  * Setup (details in README.md):
@@ -22,15 +24,17 @@
  *   GET  ?key=…&action=briefs        last 7 Trading Briefs    GET ?key=…&action=telegram   last 7 days of posts
  *   GET  ?key=…&action=holdings      symbols with quantity > 0
  *   GET  ?key=…&action=research      all rows of the Research tab
+ *   GET  ?key=…&action=laptop        all rows of the Laptop tab
  *   POST {"key":…, "ops":[…]}        Watchlist changes        POST {"key":…, "action":"telegram_add", "rows":[…]}
  */
 
-const VERSION = 5;
+const VERSION = 6;
 const TAB = 'Watchlist';
 const HIST = 'Rank history';
 const BRIEFS = 'Briefs';
 const TG = 'Telegram';
 const RESEARCH = 'Research';
+const LAPTOP = 'Laptop';
 const HEAD = ['Key', 'Symbol', 'Exchange', 'Name', 'Added', 'Tags', 'Notes', 'Updated', 'Watchlists', 'Old list removed till'];
 const HIST_HEAD = ['Date', 'List', 'Rank', 'Symbol', 'Key', 'Score'];
 const TG_HEAD = ['Time (IST)', 'Channel', 'Type', 'Stocks', 'Research house', 'Rating', 'Target ₹', 'Headline',
@@ -93,6 +97,10 @@ function doGet(e) {
     if (act === 'research') {
       const rows = readResearch_();
       return out_({ok: true, version: VERSION, count: rows.length, research: rows});
+    }
+    if (act === 'laptop') {
+      const lp = readLaptop_();
+      return out_({ok: true, version: VERSION, count: lp.rows.length, refreshed: lp.refreshed, laptop: lp.rows});
     }
     if (act === 'holdings') {
       const h = readHoldings_();
@@ -461,6 +469,28 @@ function readResearch_() {
     company: g(r, c.co), nse: g(r, c.nse).toUpperCase(), bse: g(r, c.bse), sector: g(r, c.sec), listing: g(r, c.lst),
     view: g(r, c.view), thesis: g(r, c.th), redFlags: g(r, c.rf), watchNext: g(r, c.wn), date: g(r, c.d),
     price: num_(g(r, c.p)), link: g(r, c.link), updated: g(r, c.up)}));
+}
+
+// ---------------------------------------------------------------- Laptop tab (read only; Claude rewrites it)
+// Columns by header name: Company, NSE symbol, BSE code, Source, View, Thesis, Red flags, Watch next, My position,
+// Notes, Sector, Lists, Docs, Doc types, Doc names, Last file date, Last researched, Updated on
+function readLaptop_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(LAPTOP);
+  if (!sh || sh.getLastRow() < 2) return {rows: [], refreshed: ''};
+  const v = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
+  const H = v[0].map(h => String(h).trim().toLowerCase());
+  const col = name => H.indexOf(name);
+  const c = {co: col('company'), nse: col('nse symbol'), bse: col('bse code'), src: col('source'), view: col('view'),
+             th: col('thesis'), rf: col('red flags'), wn: col('watch next'), pos: col('my position'), nt: col('notes'),
+             sec: col('sector'), ls: col('lists'), dc: col('docs'), dt: col('doc types'), dn: col('doc names'),
+             last: col('last file date'), lr: col('last researched'), up: col('updated on')};
+  const g = (r, i) => i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim();
+  const rows = v.slice(1).filter(r => g(r, c.co)).map(r => ({
+    company: g(r, c.co), nse: g(r, c.nse).toUpperCase(), bse: g(r, c.bse), source: g(r, c.src), view: g(r, c.view),
+    thesis: g(r, c.th), redFlags: g(r, c.rf), watchNext: g(r, c.wn), position: g(r, c.pos), notes: g(r, c.nt),
+    sector: g(r, c.sec), lists: g(r, c.ls), docs: Number(g(r, c.dc)) || 0, docTypes: g(r, c.dt), docNames: g(r, c.dn),
+    last: g(r, c.last), lastResearched: g(r, c.lr)}));
+  return {rows: rows, refreshed: rows.length ? g(v[1], c.up) : ''};
 }
 
 // ---------------------------------------------------------------- holdings (read only)

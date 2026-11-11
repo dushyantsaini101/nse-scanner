@@ -1377,6 +1377,10 @@ a.btn{text-decoration:none;display:inline-block;color:var(--acc);font-weight:600
 details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:10px}
 .vw{font-size:11px;padding:1px 7px;border-radius:4px;font-weight:600;white-space:nowrap}
 .vw.s{background:var(--upbg);color:var(--up)} .vw.w{background:var(--bg);color:var(--mute);border:1px solid var(--line)} .vw.c{background:var(--ambbg);color:var(--amb)} .vw.r{background:var(--dnbg);color:var(--dn)}
+.vw.l{background:var(--accbg);color:var(--acc)} .vw.n{background:var(--bg);color:var(--mute);border:1px dashed var(--line)}
+.lpi .hd{font-weight:500;font-size:14px} .lpi .px{font-size:12px;color:var(--mute);margin-top:4px} .lpi .rx{margin-top:8px;font-size:13px;line-height:1.45;color:var(--mute)} .lpi .rx b{color:var(--ink)} .lpi .rx div{margin-top:4px}
+.lpi .dl{margin:6px 0 0;padding:0;list-style:none;font-size:13px} .lpi .dl li{padding:3px 0;border-top:1px dashed var(--line);overflow-wrap:anywhere}
+.chip.pos{background:var(--upbg);color:var(--up)} .chip.avd{background:var(--dnbg);color:var(--dn)}
 .rsi .hd{font-weight:500;font-size:14px} .rsi .rx{margin-top:8px;font-size:13px;line-height:1.45;color:var(--mute)} .rsi .rx b{color:var(--ink)} .rsi .rx div{margin-top:4px}
 .rsi .px{font-size:13px;color:var(--mute);margin-top:2px}
 .chip.rs{background:var(--accbg);color:var(--acc);cursor:pointer;border:0;font-size:11px;padding:1px 6px;margin-left:2px} .chip.old{background:var(--ambbg);color:var(--amb)}
@@ -1388,7 +1392,7 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
 <div id="undo" hidden><span id="undomsg"></span><button class="btn sm" id="undobtn">Undo</button></div>
 <header><h1>Stock Scanner</h1>
 <div class="sub" id="sub"></div>
-<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="rs">Research</button><button data-v="pf">Portfolio</button></nav></header>
+<nav class="tabs"><button data-v="aaj" class="on">Aaj</button><button data-v="tg">Telegram</button><button data-v="scan">Scanner</button><button data-v="rs">Research</button><button data-v="lp">Laptop</button><button data-v="pf">Portfolio</button></nav></header>
 <div class="wrap" id="v-top" style="padding-bottom:0" hidden>
   <div class="panel">
     <div class="row" style="justify-content:space-between;align-items:center"><b>Scanner</b><span class="sub" id="wlsync"></span></div>
@@ -1470,6 +1474,19 @@ details.more>summary{font-weight:600;font-size:14px;margin:6px 0 12px;padding:10
   </div>
   <div id="rslist"></div>
   <div class="foot" id="rsfoot"></div>
+</div>
+<div class="wrap" id="v-lp" hidden>
+  <div class="panel">
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Laptop Watchlist</b>
+      <span class="row" style="gap:6px;align-items:center"><span class="sub" id="lpsync"></span><button class="btn sm" id="lpref" title="Sheet se dobara lao">↻</button></span></div>
+    <div class="chips" id="lpchips" style="margin-top:10px"></div>
+    <div class="chips" id="lpchips2" style="margin-top:6px"></div>
+    <div class="row"><input type="search" id="lpq" placeholder="Search company, symbol, thesis, file ka naam…"></div>
+    <div class="row"><select id="lplist" aria-label="List"></select>
+      <select id="lpsort" aria-label="Sort"><option value="last">Nayi file pehle</option><option value="docs">Sabse zyada files</option><option value="score">Momentum score</option><option value="name">Naam A–Z</option></select></div>
+  </div>
+  <div id="lplist2"></div>
+  <div class="foot" id="lpfoot"></div>
 </div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
@@ -3205,14 +3222,102 @@ document.addEventListener("click", e => {
   showView("rs"); window.scrollTo(0, 0);
 }, true);
 
+// ---- Laptop Watchlist tab: rows from the "Laptop" tab of the Sheet. Claude rebuilds that tab on request
+// ("laptop watchlist refresh karo") from Stock_Watchlist.xlsx + the D:\...\Stocks folder file list + list screenshots.
+// Private data: only via the Apps Script with the key, never in this public repo. Only file NAMES are shown.
+const LPV = [["Positive","s"],["Watch","w"],["Caution","c"],["Avoid","r"],["Learning","l"],["Not researched","n"]];
+const lpVw = v => { v = String(v || "").toLowerCase(); const m = LPV.find(x => v.includes(x[0].toLowerCase())); return m ? m[0] : ""; };
+const LPX = [["hold","💼 Holding"],["claude","📚 Claude ✓"],["todo","📁 Docs hain, research nahi"],["new","🆕 Sirf screenshot/list"]];
+const lpF = new Set(jget("lp_f", []).filter(f => LPV.some(x => x[0] === f) || LPX.some(x => x[0] === f)));
+const lpOpen = new Set();
+let lpQs = "";
+const lpId = r => r.nse || r.bse || r.company;
+const lpStock = r => (r.nse && resolveToken("NSE:" + r.nse)) || (r.bse && resolveToken(r.bse)) || null;
+const lpIcon = f => { const x = f.toLowerCase();
+  return f.startsWith("📷") ? "" : /blog/.test(x) ? "📝 " : /claude|\.docx$|\.md$|\.html$/.test(x) ? "🤖 " : /chat/.test(x) ? "💬 "
+    : /report|rating|nuvama|icici|motilal|kotak|jm_fin|emkay|ambit|arihant/.test(x) && !/reply/.test(x) ? "📊 " : /tweet|thread|twitter/.test(x) ? "🐦 "
+    : /\.(jpe?g|png)$/.test(x) ? "🖼️ " : /\.(mp4|mp3)$/.test(x) ? "🎬 " : "📄 "; };
+async function lpShow(force){
+  const p = sdLoad("lp", "laptop", force), q = sdLoad("rs", "research");
+  lpRender(); await p; await q; rsIndex(); lpRender();
+}
+function lpItem(r){
+  const id = lpId(r), op = lpOpen.has(id), v = lpVw(r.view), cls = (LPV.find(x => x[0] === v) || [0, "n"])[1];
+  const sym = r.s ? `<button class="tg" data-tk="${esc(r.s.k)}" title="Scanner mein dekho"><b>${esc(r.s.s)}</b>${scoreChip(r.s.ms, r.s)}</button>${rsBadge(r.s.k)}`
+    : `<span class="chip old">${r.nse || r.bse ? esc(r.nse || r.bse) + " · " : ""}Scanner mein nahi</span>`;
+  const pos = /hold/i.test(r.position) ? `<span class="chip pos">${esc(r.position)}</span>` : /avoid/i.test(r.position) ? `<span class="chip avd">Avoid</span>`
+    : r.position && !/^watchlist$/i.test(r.position) ? `<span class="chip">${esc(r.position)}</span>` : "";
+  const files = r.docNames ? r.docNames.split(" | ").filter(Boolean) : [];
+  const info = [r.docs ? `📁 ${r.docs} file${r.docs > 1 ? "s" : ""}` : "", r.last ? "aakhri " + esc(fdIso(r.last)) : "", r.lists ? "📋 " + esc(r.lists) : ""].filter(Boolean).join(" · ");
+  return `<div class="tgi lpi" data-lpi="${esc(id)}">`
+    + `<div class="th">${v ? `<span class="vw ${cls}">${esc(r.view)}</span>` : ""}<b>${esc(r.company)}</b>${sym}${pos}`
+    + `<span class="tt">${esc(r.sector || (r.s && r.s.sec) || "")}</span></div>`
+    + (r.thesis && r.thesis !== "—" ? `<div class="hd">${esc(r.thesis)}</div>` : "")
+    + (info ? `<div class="px">${info}</div>` : "")
+    + (op ? `<div class="rx">${r.redFlags && r.redFlags !== "—" ? `<div><b>Red flags:</b> ${esc(r.redFlags)}</div>` : ""}`
+          + `${r.watchNext && r.watchNext !== "—" ? `<div><b>Watch next:</b> ${esc(r.watchNext)}</div>` : ""}`
+          + `${r.notes ? `<div><b>Notes:</b> ${esc(r.notes)}</div>` : ""}`
+          + `${r.lastResearched ? `<div><b>Excel mein last research:</b> ${esc(fdIso(r.lastResearched))}</div>` : ""}`
+          + `${r.docTypes ? `<div><b>Files:</b> ${esc(r.docTypes)}</div>` : ""}</div>`
+          + (files.length ? `<ul class="dl">${files.map(f => `<li>${lpIcon(f)}${esc(f)}</li>`).join("")}</ul>` : "")
+          + `<div class="acts">${r.s ? `<button class="btn sm" data-tk="${esc(r.s.k)}">Scanner mein dekho</button>` : ""}</div>`
+      : `<div class="px" style="margin-top:4px">Tap karo: red flags, notes, files ke naam</div>`)
+    + `</div>`;
+}
+function lpRender(){
+  const s = sdState("lp");
+  const all = ((s.data && s.data.laptop) || []).map(r0 => { const r = Object.assign({}, r0); r.s = lpStock(r); r.v = lpVw(r.view);
+    r.cl = !!(r.s && RSK.has(r.s.k)); return r; });
+  const lists = [...new Set(all.flatMap(r => String(r.lists || "").split(" · ").filter(Boolean)))].sort();
+  const lv = $("lplist").value;
+  $("lplist").innerHTML = `<option value="">Sab lists</option>` + lists.map(x => `<option>${esc(x)}</option>`).join("");
+  $("lplist").value = lists.includes(lv) ? lv : "";
+  const q = lpQs.trim().toUpperCase(), ls = $("lplist").value;
+  const base = all.filter(r => (!ls || String(r.lists).split(" · ").includes(ls))
+    && (!q || [r.company, r.nse, r.bse, r.sector, r.thesis, r.redFlags, r.watchNext, r.notes, r.lists, r.docNames].some(v => String(v || "").toUpperCase().includes(q))
+        || (r.s && (r.s.s.toUpperCase().includes(q) || r.s.n.toUpperCase().includes(q)))));
+  const xOk = (f, r) => f === "hold" ? /hold/i.test(r.position) : f === "claude" ? r.cl
+    : f === "todo" ? r.docs > 0 && !r.cl && (!r.v || r.v === "Not researched") : f === "new" ? !/E/.test(r.source) && !/F/.test(r.source) : true;
+  const vF = [...lpF].filter(f => LPV.some(x => x[0] === f)), xF = [...lpF].filter(f => LPX.some(x => x[0] === f));
+  $("lpchips").innerHTML = LPV.map(([v, c]) => `<button class="tg${lpF.has(v) ? " on" : ""}" data-lpf="${esc(v)}"><span class="vw ${c}">${esc(v)}</span> <small>${base.filter(r => r.v === v).length}</small></button>`).join("");
+  $("lpchips2").innerHTML = LPX.map(([f, t]) => `<button class="tg${lpF.has(f) ? " on" : ""}" data-lpf="${f}">${t} <small>${base.filter(r => xOk(f, r)).length}</small></button>`).join("");
+  const list = base.filter(r => (!vF.length || vF.includes(r.v)) && xF.every(f => xOk(f, r)));
+  const so = $("lpsort").value;
+  list.sort(so === "name" ? (a, b) => a.company.localeCompare(b.company)
+    : so === "docs" ? (a, b) => b.docs - a.docs || a.company.localeCompare(b.company)
+    : so === "score" ? (a, b) => ((b.s && b.s.ms) ?? -1) - ((a.s && a.s.ms) ?? -1) || a.company.localeCompare(b.company)
+    : (a, b) => String(b.last || "").localeCompare(String(a.last || "")) || a.company.localeCompare(b.company));
+  let html;
+  if (!all.length) html = `<div class="panel">${s.err && /unknown action/i.test(s.err)
+    ? `<div class="err">⚠ Sheet ka Apps Script purana hai. Repo ka naya <b>apps_script/Code.gs</b> (version 6) paste karo → Deploy → Manage deployments → ✏️ → New version → Deploy.</div>`
+    : sdMsg(s, "Sheet ke <b>Laptop</b> tab mein abhi koi row nahi hai. Claude se kaho: “laptop watchlist refresh karo”.")}</div>`;
+  else if (!list.length) html = `<div class="panel na">Is filter mein kuch nahi. Chip hatao ya search khali karo.</div>`;
+  else html = list.slice(0, 300).map(lpItem).join("") + (list.length > 300 ? `<div class="panel na">Pehle 300 dikha rahe hain (kul ${list.length}). Search ya filter lagao.</div>` : "");
+  $("lplist2").innerHTML = html;
+  const note = sdNote(s), at = s.data && s.data.refreshed;
+  $("lpsync").innerHTML = (all.length ? `${list.length} / ${all.length} stocks` + (at ? " · refresh: " + esc(fdIso(String(at).slice(0, 10))) : "") : "") + (note ? " · " + note : "");
+  $("lpfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Laptop</b> tab se aata hai (public repo mein nahi). Claude isse <b>Stock_Watchlist.xlsx</b> (View, Thesis, Red flags, Watch next, My Position), <b>Stocks</b> folder ki files ke naam, screenshots aur list wali images se banata hai — PDF ke andar nahi padhta. Files laptop par hi hain; yahan sirf naam. 📚 = Claude Research tab mein research hai. Refresh: laptop on + Claude app khula + dono folders jude, phir Claude ko bolo “laptop watchlist refresh karo”. Not investment advice.`;
+}
+$("lpchips").onclick = $("lpchips2").onclick = e => { const b = e.target.closest("[data-lpf]"); if (!b) return; const f = b.dataset.lpf;
+  lpF.has(f) ? lpF.delete(f) : lpF.add(f); store.set("lp_f", JSON.stringify([...lpF])); lpRender(); };
+$("lpq").addEventListener("input", e => { lpQs = e.target.value; lpRender(); });
+["lplist", "lpsort"].forEach(id => $(id).addEventListener("input", () => lpRender()));
+$("lpref").onclick = () => lpShow(true);
+$("lplist2").addEventListener("click", e => {
+  if (e.target.closest("a,button,input,select") || String(window.getSelection() || "")) return;
+  const c = e.target.closest(".lpi[data-lpi]"); if (!c) return;
+  const id = c.dataset.lpi; lpOpen.has(id) ? lpOpen.delete(id) : lpOpen.add(id); lpRender();
+});
+
 function showView(v){
   if (v==="wl") { scanAll = false; v = "scan"; }            // old Watchlist tab now lives inside Scanner (list mode)
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.v===v));
-  ["aaj","tg","rs","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
+  ["aaj","tg","rs","lp","pf"].forEach(x => { $("v-" + x).hidden = v !== x; });
   scanVis(v==="scan");
   if (v==="aaj") aajShow();
   if (v==="tg") tgShow();
   if (v==="rs") rsShow();
+  if (v==="lp") lpShow();
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
