@@ -3060,6 +3060,7 @@ $("aajref").onclick = () => aajShow(true);
 const TGCH = [["Broker report", "Broker report"], ["Sector report", "Sector report"], ["Result", "Result"], ["hold", "Meri holdings"]];
 const TGTY = {"Broker report": "b", "Sector report": "s", "Result": "r"};
 const tgF = new Set(jget("tg_f", []).filter(f => TGCH.some(c => c[0] === f)));
+const TG_UP_MAX = 150;
 let tgQs = "", tgMore = false, tgSort = ["new", "score", "up"].includes(store.get("tg_sort")) ? store.get("tg_sort") : "new";
 const tNum = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[₹,\s]/g, "").replace(/^rs\.?/i, "")); return n > 0 ? n : null; };
 const rcls = r => /buy|accumulate|\badd\b|outperform|overweight/i.test(r) ? "up" : /sell|reduce|underperform|underweight/i.test(r) ? "dn" : "";
@@ -3108,8 +3109,8 @@ function tgRender(){
   const cnt = f => base.filter(it => f === "hold" ? it.mine : it.type === f).length;
   $("tgchips").innerHTML = TGCH.map(([f, t]) => `<button class="tg${tgF.has(f) ? " on" : ""}" data-tgf="${esc(f)}">${esc(t)} <small>${cnt(f)}</small></button>`).join("");
   if (tgSort !== "new") {                                  // stable sort; posts without a score/upside go last
-    const key = tgSort === "score" ? "sc" : "up";
-    list.sort((a, b) => a[key] == null ? (b[key] == null ? 0 : 1) : b[key] == null ? -1 : b[key] - a[key]);
+    const val = it => tgSort === "score" ? it.sc : (it.up != null && it.up <= TG_UP_MAX ? it.up : null);   // >150% = typo target
+    list.sort((a, b) => { const x = val(a), y = val(b); return x == null ? (y == null ? 0 : 1) : y == null ? -1 : y - x; });
   }
   const hl = list.filter(it => it.highlight), rest = list.filter(it => !it.highlight);
   let html = "";
@@ -3123,7 +3124,7 @@ function tgRender(){
   const tm = $("tgmore"); if (tm) tm.ontoggle = () => { tgMore = tm.open; };
   const note = sdNote(s);
   $("tgsync").innerHTML = (s.data && s.data.updated ? "Last post: " + fmtTime(s.data.updated) : "") + (note ? " · " + note : "");
-  $("tgfoot").innerHTML = `Sirf pichhle 7 din ki posts (Sheet mein 30 din rakhi jaati hain). Data sirf aapki Google Sheet ke <b>Telegram</b> tab se aata hai, public repo mein nahi. Upside = target ÷ latest close (${esc(M.asOf)}), sirf jab post mein ek hi stock ho. Score = Momentum Score (0–100). Sort: kai stock wali post mein sabse zyada score gina jaata hai; bina score/upside wali posts neeche. Card pe tap = Telegram post. Not investment advice.`;
+  $("tgfoot").innerHTML = `Sirf pichhle 7 din ki posts (Sheet mein 30 din rakhi jaati hain). Data sirf aapki Google Sheet ke <b>Telegram</b> tab se aata hai, public repo mein nahi. Upside = target ÷ latest close (${esc(M.asOf)}), sirf jab post mein ek hi stock ho. Score = Momentum Score (0–100). Sort: kai stock wali post mein sabse zyada score gina jaata hai; bina score/upside wali posts, aur ${TG_UP_MAX}% se zyada upside (galat target lagta hai) wali posts, neeche. Card pe tap = Telegram post. Not investment advice.`;
 }
 $("tgchips").onclick = e => { const b = e.target.closest("[data-tgf]"); if (!b) return; const f = b.dataset.tgf;
   tgF.has(f) ? tgF.delete(f) : tgF.add(f); store.set("tg_f", JSON.stringify([...tgF])); tgRender(); };
