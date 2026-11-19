@@ -1,12 +1,12 @@
 {
- "asOf": "18 Nov 2026",
- "generated": "18 Nov 2026, 10:56 PM",
+ "asOf": "19 Nov 2026",
+ "generated": "19 Nov 2026, 08:38 PM",
  "periodDates": {
-  "1W": "11 Nov 2026",
-  "1M": "19 Oct 2026",
-  "3M": "19 Aug 2026",
-  "6M": "20 May 2026",
-  "1Y": "18 Nov 2025"
+  "1W": "12 Nov 2026",
+  "1M": "20 Oct 2026",
+  "3M": "20 Aug 2026",
+  "6M": "21 May 2026",
+  "1Y": "19 Nov 2025"
  },
  "periods": [
   [
@@ -36,31 +36,31 @@
  ],
  "counts": {
   "NSE": 2620,
-  "NSE SME": 458,
+  "NSE SME": 454,
   "BSE": 1515,
-  "BSE SME": 397
+  "BSE SME": 398
  },
- "sessions": 253,
+ "sessions": 254,
  "historyFrom": "10 Nov 2025",
- "bse": "ok (1912 BSE-only stocks, 253 sessions, 290 stocks with earlier BSE history)",
+ "bse": "ok (1913 BSE-only stocks, 254 sessions, 289 stocks with earlier BSE history)",
  "bseSeries": {
   "A": 704,
-  "T": 161,
-  "X": 1096,
-  "Z": 71,
-  "B": 1623,
-  "XT": 269,
-  "P": 8,
-  "ZP": 1,
-  "M": 320,
-  "MT": 73,
+  "T": 159,
+  "X": 1083,
+  "Z": 68,
+  "B": 1612,
+  "XT": 273,
+  "P": 11,
+  "ZP": 2,
+  "M": 326,
+  "MT": 68,
   "MS": 4,
   "TS": 1,
-  "R": 6,
-  "F": 11
+  "R": 9,
+  "F": 16
  },
- "adjustments": 4294,
- "prevAsOf": "17 Nov 2026",
- "bench3M": 1.28,
- "asOfISO": "2026-11-18"
+ "adjustments": 4279,
+ "prevAsOf": "18 Nov 2026",
+ "bench3M": 1.96,
+ "asOfISO": "2026-11-19"
 }
