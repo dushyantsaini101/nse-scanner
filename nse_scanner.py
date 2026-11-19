@@ -1469,7 +1469,8 @@ td small.ta{display:block;color:var(--mute);font-size:11px}
     <div class="row" style="justify-content:space-between;align-items:center"><b>Telegram</b>
       <span class="row" style="gap:6px;align-items:center"><span class="sub" id="tgsync"></span><button class="btn sm" id="tgref" title="Sheet se dobara lao">↻</button></span></div>
     <div class="chips" id="tgchips" style="margin-top:10px"></div>
-    <div class="row"><input type="search" id="tgq" placeholder="Search stock, broker ya headline…"></div>
+    <div class="row"><input type="search" id="tgq" placeholder="Search stock, broker ya headline…">
+      <select id="tgsort" aria-label="Sort" style="flex:0 0 auto;width:auto"><option value="new">Naya pehle</option><option value="score">Momentum score — zyada pehle</option><option value="up">Upside % — zyada pehle</option></select></div>
   </div>
   <div id="tglist"></div>
   <div class="foot" id="tgfoot"></div>
@@ -3059,7 +3060,7 @@ $("aajref").onclick = () => aajShow(true);
 const TGCH = [["Broker report", "Broker report"], ["Sector report", "Sector report"], ["Result", "Result"], ["hold", "Meri holdings"]];
 const TGTY = {"Broker report": "b", "Sector report": "s", "Result": "r"};
 const tgF = new Set(jget("tg_f", []).filter(f => TGCH.some(c => c[0] === f)));
-let tgQs = "", tgMore = false;
+let tgQs = "", tgMore = false, tgSort = ["new", "score", "up"].includes(store.get("tg_sort")) ? store.get("tg_sort") : "new";
 const tNum = v => { const n = parseFloat(String(v == null ? "" : v).replace(/[₹,\s]/g, "").replace(/^rs\.?/i, "")); return n > 0 ? n : null; };
 const rcls = r => /buy|accumulate|\badd\b|outperform|overweight/i.test(r) ? "up" : /sell|reduce|underperform|underweight/i.test(r) ? "dn" : "";
 function tgStocks(t){
@@ -3075,7 +3076,7 @@ function tgItem(it){
   const stk = it.stk.map(x => {
     if (!x.s) return `<span class="tg">${esc(x.t)}</span>`;
     const c = px(x.s).c, up = tgt && one && c ? (tgt / c - 1) * 100 : null;
-    return `<button class="tg" data-tk="${esc(x.s.k)}" title="Stock ki details"><b>${esc(x.s.s)}</b>${scoreChip(x.s.ms,x.s)}${up != null
+    return `<button class="tg" data-tk="${esc(x.s.k)}" title="Stock ki details"><b>${esc(x.s.s)}</b><span class="na" style="font-size:12px">Score</span>${scoreChip(x.s.ms,x.s)}${up != null
       ? `<span style="color:${chgCol(up)};font-weight:600">${up > 0 ? "+" : ""}${fmt(up, 1)}% upside</span>` : ""}</button>`;
   }).join("");
   const a = (u, cls, txt) => `<a class="${cls}" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
@@ -3093,8 +3094,10 @@ function tgRender(){
   const mineSet = new Set((((h.data && h.data.holdings) || []).map(x => (resolveToken(x.symbol) || {}).k)).filter(Boolean));
   const from = isoAdd(istToday(), -6);
   const all = ((s.data && s.data.telegram) || []).filter(it => String(it.time || "").slice(0, 10) >= from).map(it => {
-    const stk = tgStocks(it.stocks);
-    return Object.assign({}, it, {stk, mine: !!it.holding || stk.some(x => x.s && (HELD.has(x.s.k) || mineSet.has(x.s.k)))});
+    const stk = tgStocks(it.stocks), tgt = tNum(it.target);
+    const scs = stk.filter(x => x.s && x.s.ms != null).map(x => x.s.ms);
+    const c1 = stk.length === 1 && stk[0].s ? px(stk[0].s).c : null;
+    return Object.assign({}, it, {stk, sc: scs.length ? Math.max(...scs) : null, up: tgt && c1 ? (tgt / c1 - 1) * 100 : null, mine: !!it.holding || stk.some(x => x.s && (HELD.has(x.s.k) || mineSet.has(x.s.k)))});
   });
   const q = tgQs.trim().toUpperCase();
   const qOk = it => !q || [it.headline, it.text, it.stocks, it.house, it.channel, it.rating].some(v => String(v || "").toUpperCase().includes(q))
@@ -3104,6 +3107,10 @@ function tgRender(){
   const list = base.filter(it => (!types.length || types.includes(it.type)) && (!tgF.has("hold") || it.mine));
   const cnt = f => base.filter(it => f === "hold" ? it.mine : it.type === f).length;
   $("tgchips").innerHTML = TGCH.map(([f, t]) => `<button class="tg${tgF.has(f) ? " on" : ""}" data-tgf="${esc(f)}">${esc(t)} <small>${cnt(f)}</small></button>`).join("");
+  if (tgSort !== "new") {                                  // stable sort; posts without a score/upside go last
+    const key = tgSort === "score" ? "sc" : "up";
+    list.sort((a, b) => a[key] == null ? (b[key] == null ? 0 : 1) : b[key] == null ? -1 : b[key] - a[key]);
+  }
   const hl = list.filter(it => it.highlight), rest = list.filter(it => !it.highlight);
   let html = "";
   if (!all.length) html = `<div class="panel">${sdMsg(s, "Pichhle 7 din mein Telegram tab mein koi post nahi.")}</div>`;
@@ -3116,11 +3123,13 @@ function tgRender(){
   const tm = $("tgmore"); if (tm) tm.ontoggle = () => { tgMore = tm.open; };
   const note = sdNote(s);
   $("tgsync").innerHTML = (s.data && s.data.updated ? "Last post: " + fmtTime(s.data.updated) : "") + (note ? " · " + note : "");
-  $("tgfoot").innerHTML = `Sirf pichhle 7 din ki posts (Sheet mein 30 din rakhi jaati hain). Data sirf aapki Google Sheet ke <b>Telegram</b> tab se aata hai, public repo mein nahi. Upside = target ÷ latest close (${esc(M.asOf)}), sirf jab post mein ek hi stock ho. Score = Momentum Score. Card pe tap = Telegram post. Not investment advice.`;
+  $("tgfoot").innerHTML = `Sirf pichhle 7 din ki posts (Sheet mein 30 din rakhi jaati hain). Data sirf aapki Google Sheet ke <b>Telegram</b> tab se aata hai, public repo mein nahi. Upside = target ÷ latest close (${esc(M.asOf)}), sirf jab post mein ek hi stock ho. Score = Momentum Score (0–100). Sort: kai stock wali post mein sabse zyada score gina jaata hai; bina score/upside wali posts neeche. Card pe tap = Telegram post. Not investment advice.`;
 }
 $("tgchips").onclick = e => { const b = e.target.closest("[data-tgf]"); if (!b) return; const f = b.dataset.tgf;
   tgF.has(f) ? tgF.delete(f) : tgF.add(f); store.set("tg_f", JSON.stringify([...tgF])); tgRender(); };
 $("tgq").addEventListener("input", e => { tgQs = e.target.value; tgRender(); });
+$("tgsort").value = tgSort;
+$("tgsort").onchange = e => { tgSort = e.target.value; store.set("tg_sort", tgSort); tgRender(); };
 $("tgref").onclick = () => tgShow(true);
 $("tglist").addEventListener("click", e => {
   if (e.target.closest("a,button,summary,input,select")) return;
