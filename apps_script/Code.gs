@@ -1,5 +1,5 @@
 /**
- * Backend for the Stock Scanner app (GitHub Pages)  — version 6
+ * Backend for the Stock Scanner app (GitHub Pages)  — version 7
  * Everything private lives only in this Google Sheet / your Google Drive (never in the public GitHub repo):
  *   - "Watchlist" tab     : one row per stock — Watchlist 1-5 membership, notes, tags, Old-list removals
  *   - "Rank history" tab  : daily rank of each stock inside Watchlist 1-5
@@ -9,7 +9,9 @@
  *   - "Research" tab      : one row per stock researched in Claude chats (Claude adds/updates rows) — read only here
  *   - "Laptop" tab        : laptop watchlist (Excel remarks + folder file list + lists); Claude rewrites it on
  *                           "laptop watchlist refresh karo" — read only here, don't edit by hand
- *   - holdings            : read only from the sheet "My Holdings (auto-updated)" (never written to)
+ *   - "Holdings" tab      : holdings ledger, synced from Zerodha by the morning brief (B1 last synced, headers row 4,
+ *                           data from row 5) — read only here. (Till v6 this was the separate file
+ *                           "My Holdings (auto-updated)"; merged into this Sheet on 19 Nov 2026.)
  *
  * Setup (details in README.md):
  *   1. Google Sheet → Extensions → Apps Script → is file ka poora code paste karo → Save.
@@ -23,12 +25,13 @@
  *   GET  ?key=…                      Watchlist items          GET ?key=…&hist=N_TCS   rank history of one stock
  *   GET  ?key=…&action=briefs        last 7 Trading Briefs    GET ?key=…&action=telegram   last 7 days of posts
  *   GET  ?key=…&action=holdings      symbols with quantity > 0
+ *   GET  ?key=…&action=portfolio     the whole Holdings tab as shown (rows of text) — for the app's Portfolio tab
  *   GET  ?key=…&action=research      all rows of the Research tab
  *   GET  ?key=…&action=laptop        all rows of the Laptop tab
  *   POST {"key":…, "ops":[…]}        Watchlist changes        POST {"key":…, "action":"telegram_add", "rows":[…]}
  */
 
-const VERSION = 6;
+const VERSION = 7;
 const TAB = 'Watchlist';
 const HIST = 'Rank history';
 const BRIEFS = 'Briefs';
@@ -45,8 +48,8 @@ const TG_KEEP_DAYS = 30;
 const TG_MAX_ROWS = 50;                       // per telegram_add call
 const TG_MAX_FILE = 15 * 1024 * 1024;         // bytes, after base64 decoding
 const TG_MIME = {pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif'};
-const HOLD_ID = '1lY37n9lk3gMk62iy7pO1wzyvIDHVFekMXNr1L7H5m3U';   // "My Holdings (auto-updated)" — read only
-const HOLD_TAB = 'Holdings';
+const HOLD_TAB = 'Holdings';                  // tab of THIS Sheet — read only here
+const HOLD_COLS = 16;                         // A Symbol … P Sold qty
 const HOLD_FIRST_ROW = 5;
 const HIST_DAYS = 180;
 const KEY_RE = /^[NB]_[A-Za-z0-9_-]{1,40}$/;
@@ -101,6 +104,11 @@ function doGet(e) {
     if (act === 'laptop') {
       const lp = readLaptop_();
       return out_({ok: true, version: VERSION, count: lp.rows.length, refreshed: lp.refreshed, laptop: lp.rows});
+    }
+    if (act === 'portfolio') {
+      const rows = readPortfolio_();
+      return out_({ok: true, version: VERSION, count: rows.length, rows: rows,
+                   at: Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd HH:mm')});
     }
     if (act === 'holdings') {
       const h = readHoldings_();
@@ -494,9 +502,14 @@ function readLaptop_() {
 }
 
 // ---------------------------------------------------------------- holdings (read only)
+function holdSheet_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(HOLD_TAB);
+  if (!sh) throw new Error('"' + HOLD_TAB + '" tab nahi mila Watchlist sheet mein');
+  return sh;
+}
+
 function readHoldings_() {
-  const sh = SpreadsheetApp.openById(HOLD_ID).getSheetByName(HOLD_TAB);
-  if (!sh) throw new Error('"' + HOLD_TAB + '" tab nahi mila holdings sheet mein');
+  const sh = holdSheet_();
   const last = sh.getLastRow();
   if (last < HOLD_FIRST_ROW) return [];
   const out = new Map();
@@ -506,6 +519,15 @@ function readHoldings_() {
     if (sym && isFinite(qty) && qty > 0) out.set(sym, (out.get(sym) || 0) + qty);
   });
   return Array.from(out, ([symbol, qty]) => ({symbol: symbol, qty: qty}));
+}
+
+/** The whole Holdings tab (A1:P, last used row) as the text shown in the Sheet — same as the old published CSV. */
+function readPortfolio_() {
+  const sh = holdSheet_();
+  const last = sh.getLastRow();
+  if (last < 1) return [];
+  return sh.getRange(1, 1, last, HOLD_COLS).getDisplayValues()
+    .map(r => { const x = r.map(v => String(v)); while (x.length && x[x.length - 1] === '') x.pop(); return x; });
 }
 
 // ---------------------------------------------------------------- tidy tabs

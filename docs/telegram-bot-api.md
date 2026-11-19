@@ -13,8 +13,9 @@ Watchlist Google Sheet. Two calls are needed: **holdings** (read) and **telegram
 
 ## 1. holdings (GET)
 
-Returns the symbols with quantity > 0 from the sheet "My Holdings (auto-updated)" (tab `Holdings`, symbol in
-column A, quantity in column D, data from row 5). Read only: that sheet is never written to.
+Returns the symbols with quantity > 0 from the `Holdings` tab of the Watchlist Sheet (symbol in column A,
+quantity in column D, data from row 5; Apps Script v7+ — till v6 this was the separate file "My Holdings (auto-updated)").
+Read only: the Apps Script never writes that tab.
 
 ```
 GET <BASE_URL>?key=<SECRET_KEY>&action=holdings

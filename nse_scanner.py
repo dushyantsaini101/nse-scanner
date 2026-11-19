@@ -1503,14 +1503,8 @@ td small.ta{display:block;color:var(--mute);font-size:11px}
 </div>
 <div class="wrap" id="v-pf" hidden>
   <div class="panel" id="pfsetup">
-    <b>Portfolio sheet ka link</b>
-    <div class="hint" style="margin-top:4px">Link sirf is phone/browser mein save hota hai. Website kholne wale doosre logon ko aapka portfolio nahi dikhta.</div>
-    <div class="row" style="margin-top:8px"><input class="url" id="pfurl" placeholder="Google Sheet ka link yahan paste karo"><button class="btn" id="pfsave">Save</button></div>
-    <ol class="steps" id="pfhelp">
-      <li>Google Sheet <b>My Holdings (auto-updated)</b> kholo.</li>
-      <li><b>File → Share → Publish to web</b> dabao, "Holdings" tab aur <b>Comma-separated values (.csv)</b> chuno, phir <b>Publish</b>.</li>
-      <li>Jo link mile use copy karke upar paste karo aur <b>Save</b> dabao.</li>
-    </ol>
+    <div class="row" style="justify-content:space-between;align-items:center"><b>Portfolio</b><button class="btn" id="pfreload">↻ Refresh</button></div>
+    <div class="hint" style="margin-top:4px">Data aapki Google Sheet (Watchlist) ke <b>Holdings</b> tab se Apps Script + secret key ke through aata hai — public link nahi. Wahi connection jo Watchlist/Research ke liye hai.</div>
     <div class="err" id="pferr"></div>
   </div>
   <div class="stats" id="pfstats"></div>
@@ -2015,18 +2009,6 @@ function pdate(v){
   return null;
 }
 const fdate = ms => ms==null ? "—" : new Date(ms).toLocaleDateString("en-IN", {day:"numeric", month:"short", year:"numeric", timeZone:"UTC"});
-function sheetCsvUrl(u){
-  u = (u||"").trim();
-  if (!u) return "";
-  if (/\/spreadsheets\/d\/e\//.test(u)) {               // "Publish to web" link
-    u = u.replace(/\/pubhtml.*$/, "/pub?output=csv");
-    if (!/output=csv/.test(u)) u += (u.includes("?") ? "&" : "?") + "output=csv";
-    return u;
-  }
-  const m = u.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);  // normal link (needs "anyone with the link")
-  if (m) return `https://docs.google.com/spreadsheets/d/${m[1]}/gviz/tq?tqx=out:csv&headers=0&sheet=Holdings`;
-  return u;
-}
 function matchStock(r){
   if (r.isin && BYISIN.has(r.isin)) return BYISIN.get(r.isin);
   const sym = (r.sym||"").toUpperCase().replace(/-(BE|ST|SM|BZ)$/, "");
@@ -2074,24 +2056,23 @@ async function fillExitPrices(){
     r.xpx = r.s.c; r.xpxSrc = "today";
   }));
 }
-async function loadPortfolio(){
-  const url = store.get("pf_url");
-  $("pfurl").value = url || "";
-  $("pfhelp").hidden = !!url;
-  if (!url) { PF = null; HELD = new Map(); renderPf(); return; }
+async function loadPortfolio(force){
   $("pferr").textContent = "Portfolio load ho raha hai…";
+  const st = await sdLoad("pf", "portfolio", force);
+  if (st.busy && !st.data) return;                      // first load still running; it will render
   try {
-    const r = await fetch(sheetCsvUrl(url), {cache:"no-store"});
-    if (!r.ok) throw new Error("Sheet nahi khul rahi (" + r.status + "). Link check karo.");
-    const text = await r.text();
-    if (/^\s*</.test(text)) throw new Error("Sheet CSV ki jagah web page de rahi hai. 'Publish to web' mein CSV chuno.");
-    PF = readSheet(parseCSV(text));
+    if (!st.data || !Array.isArray(st.data.rows)) {
+      if (st.err === "NOSHEET") throw new Error("Google Sheet connect nahi hai: Scanner → Watchlist → 'Google Sheet connection' mein URL aur key daalo.");
+      if (/unknown action/i.test(st.err)) throw new Error("Apps Script purana hai: naya Code.gs (version 7) paste karke New version deploy karo.");
+      throw new Error(st.err === "offline" ? "Internet nahi hai, aur is phone mein koi purani copy nahi." : (st.err || "Holdings load nahi hue."));
+    }
+    PF = readSheet(st.data.rows.map(r => r.map(x => x == null ? "" : String(x))));
     await fillExitPrices();
     HELD = new Map(PF.rows.filter(r => r.qty > 0 && r.s).map(r => [r.s.k, {avg:r.avg, qty:r.qty}]));
-    $("pferr").textContent = "";
+    $("pferr").textContent = st.err ? (st.err === "offline" ? "Offline — purani copy dikh rahi hai." : "⚠ " + st.err + " (purani copy)") : "";
   } catch(e) {
     PF = null; HELD = new Map();
-    $("pferr").textContent = (e && e.message && !/fetch/i.test(e.message)) ? e.message : "Sheet load nahi hui. Internet aur link check karo.";
+    $("pferr").textContent = (e && e.message) || "Holdings load nahi hue.";
   }
   renderPf(); render();
 }
@@ -2171,7 +2152,7 @@ function renderPf(){
   $("pffoot").innerHTML = `Holdings sheet: last synced ${esc(PF.synced||"—")}. Prices: ${esc(M.asOf)} ka close (live nahi). ${missing?missing+" holding(s) scanner data mein nahi mile. ":""}Exit price approx hai jab tak sheet mein asli price na ho. Not investment advice.`;
   mountCharts();
 }
-$("pfsave").onclick = () => { store.set("pf_url", $("pfurl").value.trim()); loadPortfolio(); };
+$("pfreload").onclick = () => loadPortfolio(true);
 // ---------- watchlist (Google Sheet via Apps Script, with a local copy for offline use)
 const MP = D.mprev || {};
 const BYCODE = new Map(S.filter(s => s.code).map(s => [String(s.code), s]));
@@ -2215,7 +2196,7 @@ function liqBtns(){
   ["sc", "wl"].forEach(x => { const b = $("liq" + x); if (!b) return; b.classList.toggle("on", liqHide.sc); $("liq" + x + "n").textContent = liqN[x] ? fmtInt(liqN[x]) : ""; });
 }
 ["liqsc", "liqwl"].forEach(id => $(id).onclick = () => { liqHide.sc = !liqHide.sc; store.set("liq_sc", JSON.stringify(liqHide.sc)); st.page = 0; render(); wlLimit = 100; if (!$("v-wl").hidden) renderWl(); });
-// holdings = published portfolio sheet (HELD) + "holdings" action of the Apps Script (My Holdings sheet, qty > 0)
+// holdings = Portfolio tab data (HELD, Apps Script "portfolio") + "holdings" action (Holdings tab of the Watchlist Sheet, qty > 0)
 function holdKeys(){
   const out = new Set(HELD.keys()), h = SD.hold;
   ((h && h.data && h.data.holdings) || []).forEach(x => { const t = resolveToken(x.symbol); if (t) out.add(t.k); });
@@ -3249,7 +3230,7 @@ function rsRender(){
   $("rslist").innerHTML = html;
   const note = sdNote(s), last = all.reduce((m, r) => String(r.updated || r.date) > m ? String(r.updated || r.date) : m, "");
   $("rssync").innerHTML = (all.length ? `${list.length} / ${all.length} stocks` + (last ? " · update: " + esc(fdIso(last.slice(0, 10))) : "") : "") + (note ? " · " + note : "");
-  $("rsfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Research</b> tab se aata hai (public repo mein nahi); har stock research chat ke end mein Claude row add/update karta hai. Return = latest close (${esc(M.asOf)}) ÷ research date ka close (split/bonus adjusted), ya Sheet mein likha price. 60 din se purana research = <b>Purana ho gaya</b>. 🔁 Dobara padho = 60+ din purana aur score 70+, ya meri holding jiska research 30+ din purana (score ke order mein). 💼 = My Holdings sheet mein qty &gt; 0. Turnover = 20 din ka average (₹ Cr/din); 💧 = ₹${LIQ} Cr se kam. Scanner mein 📚 = is stock ka research hai. "View" research ka read hai, buy/sell call nahi. Not investment advice.`;
+  $("rsfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Research</b> tab se aata hai (public repo mein nahi); har stock research chat ke end mein Claude row add/update karta hai. Return = latest close (${esc(M.asOf)}) ÷ research date ka close (split/bonus adjusted), ya Sheet mein likha price. 60 din se purana research = <b>Purana ho gaya</b>. 🔁 Dobara padho = 60+ din purana aur score 70+, ya meri holding jiska research 30+ din purana (score ke order mein). 💼 = Sheet ke Holdings tab mein qty &gt; 0. Turnover = 20 din ka average (₹ Cr/din); 💧 = ₹${LIQ} Cr se kam. Scanner mein 📚 = is stock ka research hai. "View" research ka read hai, buy/sell call nahi. Not investment advice.`;
 }
 $("rschips").onclick = $("rschips2").onclick = e => { const b = e.target.closest("[data-rsf]"); if (!b) return; const f = b.dataset.rsf;
   rsF.has(f) ? rsF.delete(f) : rsF.add(f); store.set("rs_f", JSON.stringify([...rsF])); rsRender(); };
@@ -3360,7 +3341,7 @@ function lpRender(){
   $("lplist2").innerHTML = html;
   const note = sdNote(s), at = s.data && s.data.refreshed;
   $("lpsync").innerHTML = (all.length ? `${list.length} / ${all.length} stocks` + (at ? " · refresh: " + esc(fdIso(String(at).slice(0, 10))) : "") : "") + (note ? " · " + note : "");
-  $("lpfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Laptop</b> tab se aata hai (public repo mein nahi). Claude isse <b>Stock_Watchlist.xlsx</b> (View, Thesis, Red flags, Watch next, My Position), <b>Stocks</b> folder ki files ke naam, screenshots aur list wali images se banata hai — PDF ke andar nahi padhta. Files laptop par hi hain; yahan sirf naam. 📚 = Claude Research tab mein research hai; agar wo Excel ke "Last researched" se naya hai to card pe Research tab ka view/thesis dikhta hai (📚 ke saath) aur neeche Excel wala view. 💼 = My Holdings sheet (qty &gt; 0), Excel ka My Position nahi. Turnover = 20 din ka average (₹ Cr/din); 💧 = ₹${LIQ} Cr se kam. Refresh: laptop on + Claude app khula + dono folders jude, phir Claude ko bolo “laptop watchlist refresh karo”. Not investment advice.`;
+  $("lpfoot").innerHTML = `Data sirf aapki Google Sheet ke <b>Laptop</b> tab se aata hai (public repo mein nahi). Claude isse <b>Stock_Watchlist.xlsx</b> (View, Thesis, Red flags, Watch next, My Position), <b>Stocks</b> folder ki files ke naam, screenshots aur list wali images se banata hai — PDF ke andar nahi padhta. Files laptop par hi hain; yahan sirf naam. 📚 = Claude Research tab mein research hai; agar wo Excel ke "Last researched" se naya hai to card pe Research tab ka view/thesis dikhta hai (📚 ke saath) aur neeche Excel wala view. 💼 = Sheet ka Holdings tab (qty &gt; 0), Excel ka My Position nahi. Turnover = 20 din ka average (₹ Cr/din); 💧 = ₹${LIQ} Cr se kam. Refresh: laptop on + Claude app khula + dono folders jude, phir Claude ko bolo “laptop watchlist refresh karo”. Not investment advice.`;
 }
 $("lpchips").onclick = $("lpchips2").onclick = e => { const b = e.target.closest("[data-lpf]"); if (!b) return; const f = b.dataset.lpf;
   lpF.has(f) ? lpF.delete(f) : lpF.add(f); store.set("lp_f", JSON.stringify([...lpF])); lpRender(); };
@@ -3382,6 +3363,7 @@ function showView(v){
   if (v==="tg") tgShow();
   if (v==="rs") rsShow();
   if (v==="lp") lpShow();
+  if (v==="pf") loadPortfolio();
 }
 document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showView(b.dataset.v));
 $("foot").innerHTML = `Source: NSE &amp; BSE end-of-day bhavcopy files (${M.sessions} sessions since ${esc(M.historyFrom)}) and NSE index lists. Prices adjusted for splits and bonuses. Stocks listed on both exchanges are shown once, with NSE data. Charts: TradingView Lightweight Charts. BSE: ${esc(M.bse||"—")}. Not investment advice.`;
