@@ -1259,6 +1259,13 @@ td.sym b{font-weight:600}
 td.sym small{display:block;color:var(--mute);max-width:220px;overflow:hidden;text-overflow:ellipsis}
 .tag{font-size:10px;padding:1px 5px;border-radius:4px;background:var(--accbg);color:var(--acc);margin-left:4px;vertical-align:middle}
 .tag.b{background:var(--ambbg);color:var(--amb)}
+/* segment colours: NSE SME purple, BSE SME orange, BSE-only teal, NSE mainboard plain */
+tr.sg-nsme td{background:rgba(139,92,246,.07)} tr.sg-nsme td:first-child{box-shadow:inset 4px 0 0 #8b5cf6}
+tr.sg-bsme td{background:rgba(245,158,11,.08)} tr.sg-bsme td:first-child{box-shadow:inset 4px 0 0 #f59e0b}
+tr.sg-bse td{background:rgba(20,184,166,.07)} tr.sg-bse td:first-child{box-shadow:inset 4px 0 0 #14b8a6}
+.tag.sgn{background:rgba(139,92,246,.15);color:#7c3aed} .tag.sgb{background:rgba(245,158,11,.18);color:#b45309} .tag.sgx{background:rgba(20,184,166,.15);color:#0f766e}
+.seglg{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mute);margin:-4px 0 10px}
+.seglg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 .pill{display:inline-block;min-width:68px;padding:2px 6px;border-radius:6px;font-weight:600}
 .up{color:var(--up);background:var(--upbg)} .dn{color:var(--dn);background:var(--dnbg)} .na{color:var(--mute)}
 .chip{display:inline-block;font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600}
@@ -1549,6 +1556,7 @@ td small.ta{display:block;color:var(--mute);font-size:11px}
   <div class="hint" id="hint"></div>
 </div>
 <div class="stats" id="stats"></div>
+<div class="seglg" id="seglg"></div>
 <div class="tbl"><table><thead><tr id="head"></tr></thead><tbody id="body"></tbody></table>
 <div class="pager"><span id="pinfo"></span><span><button class="btn" id="prev">‹ Prev</button> <button class="btn" id="next">Next ›</button></span></div></div>
 <div class="foot" id="foot"></div>
@@ -1606,7 +1614,7 @@ Object.keys(IDX).forEach(k => og.appendChild(new Option(`${k} (${IDX[k].length})
 $("universe").appendChild(og);
 $("sector").add(new Option("All sectors",""));
 [...new Set(S.map(s=>s.sec).filter(Boolean))].sort().forEach(s => $("sector").add(new Option(s,s)));
-[["chg","% change"],["ms","Momentum score"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["at","Turnover (20 din avg)"],["tv","Traded value (aaj)"],["sym","Symbol A–Z"]]
+[["chg","% change"],["ms","Momentum score"],["f52","Closest to 52W high"],["vx","Volume × average"],["c","Price"],["at","Turnover (20 din avg)"],["tv","Traded value (aaj)"],["sym","Symbol A–Z"],["seg","Segment (SME pehle)"]]
   .forEach(([v,t])=>$("sortsel").add(new Option(t,v)));
 const HAS_MC = S.some(s => s.mc);
 if (HAS_MC) $("sortsel").add(new Option("Market cap","mc"));
@@ -1624,11 +1632,15 @@ const COLS = [
   {k:"sec", t:"Sector", cls:"l hide-m"},
 ];
 const DVORD = {bo:3, box:2, form:1};
+const SEGC = {"NSE SME":"sg-nsme", "BSE SME":"sg-bsme", "BSE":"sg-bse"};
+const SEGO = {"NSE SME":3, "BSE SME":2, "BSE":1, "NSE":0};        // "Segment (SME pehle)" sort: bigger first
+const segKey = (s, c) => s ? (SEGO[s.seg] || 0) * 1e6 + (c == null ? -1e5 : c) : null;   // then % change inside the group
 function val(s, k){
   switch(k){
     case "sym": return s.s; case "sec": return s.sec||"";
     case "chg": return s.ch[st.period];
     case "dv": return s.dv ? DVORD[s.dv.st] : null;
+    case "seg": return segKey(s, s.ch[st.period]);
     default: return s[k];
   }
 }
@@ -1908,6 +1920,9 @@ function render(){
     <div class="stat"><b style="color:var(--dn)">${fmtInt(dn)}</b><span>declining</span></div>
     <div class="stat"><b>${med==null?"—":sgn(med)}</b><span>median ${pd}</span></div>
     <div class="stat"><b style="color:var(--up)">${fmtInt(bo)}</b><span>Darvas breakouts today</span></div>`;
+  const sgc = g => current.filter(s => s.seg === g).length;
+  $("seglg").innerHTML = [["#8b5cf6","NSE SME","NSE SME"],["#f59e0b","BSE SME","BSE SME"],["#14b8a6","BSE-only","BSE"]]
+    .map(([c, t, g]) => `<span><i style="background:${c}"></i>${t} ${fmtInt(sgc(g))}</span>`).join("") + `<span>· baaki = NSE mainboard</span>`;
 
   $("head").innerHTML = COLS.map(c => {
     const on = st.sort===c.k; const arrow = on ? (st.asc?" ▲":" ▼") : "";
@@ -1927,9 +1942,9 @@ function render(){
     const c = s.ch[st.period], id = s.x+":"+(s.code||s.s);
     const cls = c==null ? "na" : c>0 ? "up" : c<0 ? "dn" : "na";
     let tags = "";
-    if (s.seg==="NSE SME") tags += `<span class="tag">SME</span>`;
-    if (s.seg==="BSE SME") tags += `<span class="tag b">BSE SME</span>`;
-    if (s.seg==="BSE") tags += `<span class="tag b">BSE</span>`;
+    if (s.seg==="NSE SME") tags += `<span class="tag sgn">NSE SME</span>`;
+    if (s.seg==="BSE SME") tags += `<span class="tag sgb">BSE SME</span>`;
+    if (s.seg==="BSE") tags += `<span class="tag sgx">BSE</span>`;
     if (s.seg==="NSE" && s.sr!=="EQ") tags += `<span class="tag">${esc(s.sr)}</span>`;
     if (s.nh) tags += ` <span class="chip nh">52W high</span>`;
     if (s.dv && s.dv.st==="bo") tags += ` <span class="chip bo">Breakout</span>`;
@@ -1938,7 +1953,7 @@ function render(){
     if (held) tags += ` <span class="chip hold">Holding</span>`;
     tags += rsBadge(s.k);
     tags += wlBtn(s.k);
-    const main = `<tr class="r" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
+    const main = `<tr class="r ${SEGC[s.seg]||""}" data-id="${esc(id)}"><td class="l sym"><b>${esc(s.s)}</b>${tags}<small>${esc(s.n)}</small></td>
       <td>${fmt(s.c)}</td>
       <td><span class="pill ${cls}">${sgn(c)}</span></td>
       <td class="hide-m">${scoreChip(s.ms,s)}</td>
@@ -2461,6 +2476,7 @@ const SORTS = [
   ["f52", "52W high se doori", (k,s) => s && s.f52],
   ["rk", "Rank gain (kal se)", k => rankChg(k)],
   ["price", "Price", (k,s) => s && px(s).c],
+  ["seg", "Segment (SME pehle)", (k,s) => segKey(s, s && chgP(s))],
   ["name", "Naam A–Z", (k,s) => (s ? s.n : getIt(k).name || symOf(k)).toUpperCase()],
   ["ipod", "IPO / Shift: date", k => IPO[k] ? IPO[k][0] : null],
   ["ipor", "IPO / Shift: % vs issue / pehla din", k => ipoPct(k)],
@@ -2590,7 +2606,7 @@ function renderWl(order){
     const forced = k === wlForce && !wlVisible.includes(k) ? " · is mode mein nahi" : "";
     if (!s) return `<tr class="r" data-wk="${esc(k)}"><td class="rk">${cb(k)}<b class="na">—</b></td><td class="l sym" colspan="4"><b>${esc(symOf(k))}</b>${tags}<small>${esc(it.name||"")} · aaj ka data nahi (trade nahi hua ya delist)${forced}</small>${ipoLine(k, null)}</td></tr>`;
     const held = HELD.get(k);
-    const main = `<tr class="r${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
+    const main = `<tr class="r ${SEGC[s.seg]||""}${isNew20(k)?" n20":""}${wlSel.has(k)?" selr":""}" data-wk="${esc(k)}"><td class="rk">${cb(k)}${rankCell(k)}</td>
       <td class="l sym"><b>${esc(s.s)}</b>${tags}${held?` <span class="chip hold">Holding</span>`:""}${rsBadge(k)}${s.dv&&s.dv.st==="bo"?` <span class="chip bo">Breakout</span>`:""}<small>${esc(s.n)}${s.mc?` · ₹${fmtInt(s.mc)} Cr`:(s.mcl?` · ${({L:"Large",M:"Mid",S:"Small",Mi:"Micro"})[s.mcl]}`:"")}${s.at!=null?` · ${lowLiq(s)?"💧 ":""}${crF(s.at)} Cr/din`:""}${it.notes?" · 📝 "+esc(it.notes.slice(0,60)):""}${forced}</small>${ipoLine(k, s)}</td>
       <td>${scoreChip(s.ms,s)}</td>
       <td data-pk="${esc(k)}">${pxCell(s)}</td>
