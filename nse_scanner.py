@@ -1117,6 +1117,13 @@ def write_charts(folder, charts):
             json.dump(out, f, separators=(",", ":"))
 
 
+def _chg_back(s, n):
+    """% change vs the close TRADING_BACK[n] sessions ago (n=0 -> 2 days, n=1 -> 3 days); "" when unknown."""
+    tb = s.get("tb") or []
+    base = tb[n] if len(tb) > n else None
+    return r2((s["c"] / base - 1) * 100) if base and s.get("c") else ""
+
+
 def write_csv(stocks, index_members, meta):
     """Full data file that Claude reads (data/scan_full.csv in the repository)."""
     idx = {}
@@ -1132,7 +1139,7 @@ def write_csv(stocks, index_members, meta):
                    + ["High_52W", "From_52WH_pct", "New_52W_High", "Vol_x_50d",
                       "Darvas_Status", "Box_Top", "Box_Bottom", "Box_Sessions",
                       "IPO_Sessions", "IPO_Breakout", "Volume", "Value_Cr", "Avg_Value_20D_Cr", "Indices", "ISIN",
-                      "Momentum_Score", "Market_Cap_Cr", "Cap_Class"])
+                      "Momentum_Score", "Market_Cap_Cr", "Cap_Class", "Chg_2D", "Chg_3D"])
         for s in stocks:
             dv = s.get("dv") or {}
             w.writerow([s["s"], "BSE" if s["x"] == "B" else "NSE", s["code"], s["n"], s["seg"],
@@ -1142,7 +1149,8 @@ def write_csv(stocks, index_members, meta):
                           dv.get("st", ""), dv.get("t", ""), dv.get("b", ""), dv.get("d", ""),
                           s["ipo"] or "", s["ib"], s["v"], s["tv"], s.get("at", ""),
                           "; ".join(idx.get(s["s"], [])) if s["x"] == "N" else "", s["i"], s["ms"],
-                          s.get("mc", ""), {"L": "Large", "M": "Mid", "S": "Small", "Mi": "Micro"}.get(s.get("mcl"), "")])
+                          s.get("mc", ""), {"L": "Large", "M": "Mid", "S": "Small", "Mi": "Micro"}.get(s.get("mcl"), ""),
+                          _chg_back(s, 0), _chg_back(s, 1)])
     with open(os.path.join(DATA_DIR, "meta_full.json"), "w") as f:
         json.dump(meta, f, indent=1)
 
