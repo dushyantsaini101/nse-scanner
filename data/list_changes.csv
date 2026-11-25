@@ -165,3 +165,4 @@ Date,List,Change,Symbol,Exchange,Key,Reason
 2026-11-23,F&O,added,APARINDS,NSE,N_APARINDS,
 2026-11-23,F&O,removed,IEX,NSE,N_IEX,
 2026-11-23,F&O,removed,IREDA,NSE,N_IREDA,
+2026-11-25,Mainboard Shift,removed,BETA,NSE,N_BETA,1 saal pura
