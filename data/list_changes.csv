@@ -169,3 +169,5 @@ Date,List,Change,Symbol,Exchange,Key,Reason
 2026-11-26,Mainboard Shift,added,OLIL,NSE,N_OLIL,
 2026-11-26,NSE SME,removed,FOCE,NSE,N_FOCE,trading band / delist
 2026-11-26,NSE SME,removed,OLIL,NSE,N_OLIL,mainboard pe migrate
+2026-11-27,NSE SME,added,WATRANA,NSE,N_WATRANA,
+2026-11-27,NSE SME,removed,KKVAPOW,NSE,N_KKVAPOW,trading band / delist
